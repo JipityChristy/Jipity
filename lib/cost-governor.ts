@@ -12,10 +12,10 @@ export const COST_GOVERNOR = {
 
 export const MODEL_CONFIG = {
   standard: {
-    model: "gpt-4.1",
+    model: "gpt-5-nano",
     maxOutputTokens: 900,
-    inputPricePerMillion: 2,
-    outputPricePerMillion: 8,
+    inputPricePerMillion: 0.05,
+    outputPricePerMillion: 0.4,
   },
   deep: {
     model: "gpt-5.6-sol",

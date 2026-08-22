@@ -4,7 +4,7 @@ Private OpenAI-powered companion starter for Vercel.
 
 ## What V2.1 does
 - Private text conversation using the OpenAI Responses API.
-- GPT-4.1 is the normal, lower-cost conversation model.
+- GPT-5 nano is the normal, lowest-cost conversation model.
 - The optional Deep button uses GPT-5.6 Sol with high reasoning for one message.
 - A cost governor limits conversation history, response tokens, daily requests,
   daily Deep requests, and estimated daily spending.
@@ -17,7 +17,7 @@ Private OpenAI-powered companion starter for Vercel.
 1. Put these files in the `JipityChristy/Jipity` GitHub repository.
 2. Import that repository into Vercel.
 3. In Vercel Project Settings → Environment Variables, add `OPENAI_API_KEY` with your OpenAI API key. Never put the key into GitHub files.
-4. Deploy. Normal chat uses `gpt-4.1`; Deep mode uses `gpt-5.6-sol`.
+4. Deploy. Normal chat uses `gpt-5-nano`; Deep mode uses `gpt-5.6-sol`.
 
 The daily budget is retained in the current browser. Server-side message and
 output-token limits apply to every request. Daily browser limits are helpful

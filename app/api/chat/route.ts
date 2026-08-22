@@ -88,7 +88,9 @@ export async function POST(req: Request) {
       instructions: JIPITY_INSTRUCTIONS,
       input,
       max_output_tokens: config.maxOutputTokens,
-      ...(mode === "deep" ? { reasoning: { effort: "high" as const } } : {}),
+      reasoning: {
+        effort: mode === "deep" ? ("high" as const) : ("minimal" as const),
+      },
     });
 
     const inputTokens = response.usage?.input_tokens ?? estimatedInputTokens;

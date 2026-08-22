@@ -208,7 +208,7 @@ export default function Home() {
             Deep
           </button>
           <span className="modehint">
-            {deep ? "GPT-5.6 Sol · next message only" : "GPT-4.1 · standard"}
+            {deep ? "GPT-5.6 Sol · next message only" : "GPT-5 nano · economy"}
           </span>
         </div>
 
