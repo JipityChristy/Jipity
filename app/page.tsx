@@ -144,8 +144,8 @@ export default function Home() {
     );
     setMicrophoneAvailable(
       Boolean(
-        navigator.mediaDevices?.getUserMedia &&
-          typeof window.MediaRecorder !== "undefined",
+        typeof navigator.mediaDevices?.getUserMedia === "function" &&
+          typeof window.MediaRecorder === "function",
       ),
     );
 
