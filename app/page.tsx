@@ -80,6 +80,32 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    fetch("/api/auth/session", { cache: "no-store" })
+      .then(async (response) => {
+        if (response.status === 401) {
+          window.location.replace("/login");
+          return;
+        }
+
+        if (!response.ok) return;
+        const result = await response.json();
+
+        if (!cancelled && result?.governor) {
+          setUsage(normalizedUsage(result.governor));
+        }
+      })
+      .catch(() => {
+        // The chat endpoint still verifies every session and signed usage limit.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem("jipity_messages", JSON.stringify(messages.slice(-40)));
   }, [messages]);
 
@@ -159,9 +185,14 @@ export default function Home() {
         body: JSON.stringify({
           messages: next.slice(-COST_GOVERNOR.maxMessages),
           mode,
-          governor: currentUsage,
         }),
       });
+
+      if (response.status === 401) {
+        window.location.replace("/login");
+        return;
+      }
+
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || "Request failed");
 
@@ -171,18 +202,11 @@ export default function Home() {
         ...previous,
         { role: "assistant", content: data.text },
       ]);
-      setUsage((previous) => {
-        const baseline = previous.day === day ? previous : emptyUsage();
 
-        return {
-          day,
-          spentUsd: Number((baseline.spentUsd + estimatedCostUsd).toFixed(6)),
-          requests: baseline.requests + 1,
-          spiritualRequests:
-            baseline.spiritualRequests + (mode === "spiritual" ? 1 : 0),
-          deepRequests: baseline.deepRequests + (mode === "deep" ? 1 : 0),
-        };
-      });
+      if (data?.governor) {
+        setUsage(normalizedUsage(data.governor));
+      }
+
       setAudit((previous) => [
         ...previous,
         {
@@ -208,6 +232,14 @@ export default function Home() {
     localStorage.removeItem("jipity_audit");
   }
 
+  async function lockJipity() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      window.location.replace("/login");
+    }
+  }
+
   return (
     <main className="shell">
       <div className="top">
@@ -215,7 +247,12 @@ export default function Home() {
           <div className="brand">Jipity ✦</div>
           <div className="sub">Private companion · evidence before certainty</div>
         </div>
-        <span className="pill">{status}</span>
+        <div className="top-actions">
+          <span className="pill">{status}</span>
+          <button className="smallbtn lockbtn" onClick={lockJipity}>
+            Lock Jipity
+          </button>
+        </div>
       </div>
 
       <div className="card">
@@ -285,8 +322,8 @@ export default function Home() {
           Daily safety budget: ${remainingBudget.toFixed(2)} remaining ·
           Spiritual: {remainingSpiritual}/
           {COST_GOVERNOR.maxSpiritualRequestsPerDay} left · Deep: {" "}
-          {remainingDeep}/{COST_GOVERNOR.maxDeepRequestsPerDay} left · Chat stays
-          in this browser.
+          {remainingDeep}/{COST_GOVERNOR.maxDeepRequestsPerDay} left · Signed
+          server checks protect this session · Chat stays in this browser.
         </div>
 
         <details className="panel">

@@ -7,16 +7,24 @@ import {
   type JipityMode,
 } from "../../../lib/cost-governor";
 import { JIPITY_INSTRUCTIONS } from "../../../lib/jipity-prompt";
+import {
+  readAuthenticatedState,
+  setUsageCookie,
+} from "../../../lib/jipity-security";
 
 export const runtime = "nodejs";
 
-function nonNegativeNumber(value: unknown): number {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? number : 0;
-}
-
 export async function POST(req: Request) {
   try {
+    const state = await readAuthenticatedState(req);
+
+    if (!state) {
+      return NextResponse.json(
+        { error: "Private access is required." },
+        { status: 401 },
+      );
+    }
+
     if (!process.env.OPENAI_API_KEY) {
       return NextResponse.json(
         { error: "OPENAI_API_KEY is not configured" },
@@ -59,13 +67,8 @@ export async function POST(req: Request) {
       );
     }
 
-    const reportedUsage = body?.governor ?? {};
-    const spentUsd = nonNegativeNumber(reportedUsage.spentUsd);
-    const requests = nonNegativeNumber(reportedUsage.requests);
-    const spiritualRequests = nonNegativeNumber(
-      reportedUsage.spiritualRequests,
-    );
-    const deepRequests = nonNegativeNumber(reportedUsage.deepRequests);
+    const { spentUsd, requests, spiritualRequests, deepRequests } =
+      state.governor;
     const estimatedInputTokens = Math.ceil(
       (JIPITY_INSTRUCTIONS.length + input.length) / 2,
     );
@@ -108,17 +111,35 @@ export async function POST(req: Request) {
     const inputTokens = response.usage?.input_tokens ?? estimatedInputTokens;
     const outputTokens =
       response.usage?.output_tokens ?? config.maxOutputTokens;
-
-    return NextResponse.json({
+    const estimatedCostUsd = estimateCostUsd(
+      mode,
+      inputTokens,
+      outputTokens,
+    );
+    const governor = {
+      ...state.governor,
+      spentUsd: Number((state.governor.spentUsd + estimatedCostUsd).toFixed(6)),
+      requests: state.governor.requests + 1,
+      spiritualRequests:
+        state.governor.spiritualRequests + (mode === "spiritual" ? 1 : 0),
+      deepRequests:
+        state.governor.deepRequests + (mode === "deep" ? 1 : 0),
+    };
+    const result = NextResponse.json({
       text: response.output_text || "I didn't get a usable response that time.",
       mode,
       model: response.model || config.model,
       usage: {
         inputTokens,
         outputTokens,
-        estimatedCostUsd: estimateCostUsd(mode, inputTokens, outputTokens),
+        estimatedCostUsd,
       },
+      governor,
     });
+
+    await setUsageCookie(result, req, { ...state, governor });
+
+    return result;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
