@@ -6,6 +6,7 @@ import {
   estimateTranscriptionReserveUsd,
 } from "../../../../lib/jipity-audio";
 import {
+  issueAuditReceipt,
   readAuthenticatedState,
   setUsageCookie,
 } from "../../../../lib/jipity-security";
@@ -102,10 +103,17 @@ export async function POST(request: Request) {
       ),
       transcriptionRequests: state.governor.transcriptionRequests + 1,
     };
+    const auditReceipt = await issueAuditReceipt(state, {
+      action: "voice_transcribed",
+      outcome: "ok",
+      model: JIPITY_TRANSCRIPTION_MODEL,
+      estimatedCostUsd,
+    });
     const response = NextResponse.json({
       text: transcript.text.trim().slice(0, COST_GOVERNOR.maxMessageCharacters),
       governor,
       usage: { estimatedCostUsd },
+      auditReceipt,
     });
 
     await setUsageCookie(response, request, { ...state, governor });

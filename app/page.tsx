@@ -17,9 +17,37 @@ import {
   isJipityVoiceChoice,
   type JipityVoiceChoice,
 } from "../lib/jipity-audio";
+import {
+  ALWAYS_REMEMBER_RULES,
+  MEMORY_LIMITS,
+  NEVER_REMEMBER_RULES,
+  createResearchRecord,
+  findFreshResearch,
+  normalizeSourceUrl,
+  screenPrivateText,
+  selectApprovedMemories,
+  validateMemoryRecord,
+  type EvidenceLabel,
+  type MemoryRecord,
+  type MemoryShelf,
+  type ResearchRecord,
+} from "../lib/jipity-memory";
+import {
+  ENCRYPTED_VAULT_STORAGE_KEY,
+  decryptPrivateVault,
+  encryptPrivateVault,
+  importPrivateVaultKey,
+  normalizePrivateVault,
+  type VaultAuditEntry,
+} from "../lib/jipity-vault";
+import {
+  GUARDED_TOOLS,
+  TASK_LIMITS,
+  type TaskAssessment,
+} from "../lib/jipity-guardrails";
 
 type Message = { role: "user" | "assistant"; content: string };
-type Audit = { at: string; event: string };
+type Audit = VaultAuditEntry;
 type DailyUsage = {
   day: string;
   spentUsd: number;
@@ -87,6 +115,25 @@ export default function Home() {
   const [microphoneAvailable, setMicrophoneAvailable] = useState(false);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [vaultStatus, setVaultStatus] = useState<
+    "loading" | "ready" | "unavailable"
+  >("loading");
+  const [memories, setMemories] = useState<MemoryRecord[]>([]);
+  const [research, setResearch] = useState<ResearchRecord[]>([]);
+  const [cacheHits, setCacheHits] = useState(0);
+  const [memoryDraft, setMemoryDraft] = useState("");
+  const [memoryShelf, setMemoryShelf] = useState<MemoryShelf>("working");
+  const [memoryEvidence, setMemoryEvidence] =
+    useState<EvidenceLabel>("user-confirmed");
+  const [memorySource, setMemorySource] = useState("");
+  const [memoryError, setMemoryError] = useState("");
+  const [memoryNotice, setMemoryNotice] = useState("");
+  const [taskDraft, setTaskDraft] = useState("");
+  const [taskAssessment, setTaskAssessment] = useState<TaskAssessment | null>(
+    null,
+  );
+  const [taskBusy, setTaskBusy] = useState(false);
+  const [auditVerification, setAuditVerification] = useState("");
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const audioCacheRef = useRef<Map<string, string>>(new Map());
   const audioAbortRef = useRef<AbortController | null>(null);
@@ -94,6 +141,9 @@ export default function Home() {
   const recorderStreamRef = useRef<MediaStream | null>(null);
   const recordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recordingStartedAtRef = useRef(0);
+  const vaultKeyRef = useRef<CryptoKey | null>(null);
+  const vaultWriteRef = useRef<Promise<void>>(Promise.resolve());
+  const memoryPanelRef = useRef<HTMLDetailsElement | null>(null);
 
   useEffect(() => {
     try {
@@ -131,6 +181,67 @@ export default function Home() {
       })
       .catch(() => {
         // The chat endpoint still verifies every session and signed usage limit.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch("/api/safety/vault", { cache: "no-store" })
+      .then(async (response) => {
+        if (response.status === 401) {
+          window.location.replace("/login");
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error("Encrypted private memory could not be opened.");
+        }
+
+        const result: unknown = await response.json();
+
+        if (
+          typeof result !== "object" ||
+          result === null ||
+          !("key" in result) ||
+          typeof result.key !== "string"
+        ) {
+          throw new Error("The encrypted private memory key is unavailable.");
+        }
+
+        const key = await importPrivateVaultKey(result.key);
+        const encrypted = localStorage.getItem(ENCRYPTED_VAULT_STORAGE_KEY);
+        const saved = encrypted
+          ? await decryptPrivateVault(encrypted, key)
+          : null;
+
+        if (cancelled) return;
+        vaultKeyRef.current = key;
+
+        if (saved) {
+          setMessages((previous) =>
+            saved.messages.length > 0 ? saved.messages : previous,
+          );
+          setAudit((previous) =>
+            saved.audit.length > 0 ? saved.audit : previous,
+          );
+          setMemories(saved.memories);
+          setResearch(saved.research);
+          setCacheHits(saved.cacheHits);
+        }
+
+        setVaultStatus("ready");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setVaultStatus("unavailable");
+        setMemoryError(
+          "Encrypted memory is unavailable. Chat still works, but new private details will not be saved.",
+        );
       });
 
     return () => {
@@ -183,12 +294,32 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("jipity_messages", JSON.stringify(messages.slice(-40)));
-  }, [messages]);
+    const key = vaultKeyRef.current;
+    if (vaultStatus !== "ready" || !key) return;
 
-  useEffect(() => {
-    localStorage.setItem("jipity_audit", JSON.stringify(audit.slice(-100)));
-  }, [audit]);
+    const snapshot = normalizePrivateVault({
+      version: 1,
+      messages,
+      audit,
+      memories,
+      research,
+      cacheHits,
+    });
+
+    vaultWriteRef.current = vaultWriteRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const encrypted = await encryptPrivateVault(snapshot, key);
+        localStorage.setItem(ENCRYPTED_VAULT_STORAGE_KEY, encrypted);
+        localStorage.removeItem("jipity_messages");
+        localStorage.removeItem("jipity_audit");
+      })
+      .catch(() => {
+        setMemoryError(
+          "This browser would not save encrypted private memory. Your chat still works.",
+        );
+      });
+  }, [vaultStatus, messages, audit, memories, research, cacheHits]);
 
   useEffect(() => {
     localStorage.setItem("jipity_usage", JSON.stringify(usage));
@@ -219,6 +350,254 @@ export default function Home() {
     0,
     Math.min(100, (remainingBudget / COST_GOVERNOR.dailyBudgetUsd) * 100),
   );
+
+  function appendAudit(event: string, receipt?: string) {
+    setAudit((previous) =>
+      [
+        ...previous,
+        {
+          at: new Date().toISOString(),
+          event,
+          ...(receipt ? { receipt, signed: true } : {}),
+        },
+      ].slice(-120),
+    );
+  }
+
+  async function recordSignedActivity(
+    action:
+      | "memory_saved"
+      | "memory_deleted"
+      | "research_reused"
+      | "privacy_blocked",
+    event: string,
+    outcome: "ok" | "blocked" | "approval-required" = "ok",
+    shelf?: MemoryShelf,
+  ) {
+    try {
+      const response = await fetch("/api/safety/audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, outcome, ...(shelf ? { shelf } : {}) }),
+      });
+
+      if (response.status === 401) {
+        window.location.replace("/login");
+        return;
+      }
+
+      const result = await response.json();
+      appendAudit(event, response.ok ? result.receipt : undefined);
+    } catch {
+      appendAudit(`${event}; signed receipt unavailable`);
+    }
+  }
+
+  function stageMemory(value: string, shelf: MemoryShelf = "working") {
+    const privacy = screenPrivateText(value);
+
+    if (!privacy.allowed) {
+      setMemoryError(privacy.reasons.join(" "));
+      setMemoryNotice("");
+      void recordSignedActivity(
+        "privacy_blocked",
+        "Sensitive material blocked from private memory",
+        "blocked",
+      );
+      return;
+    }
+
+    setMemoryError("");
+    setMemoryNotice("Review the short note, choose its shelf, then save it yourself.");
+    setMemoryDraft(
+      value.trim().replace(/\s+/g, " ").slice(0, MEMORY_LIMITS.maxSummaryCharacters),
+    );
+    setMemoryShelf(shelf);
+    setMemoryEvidence(shelf === "review" ? "unverified" : "user-confirmed");
+    setMemorySource("");
+    if (memoryPanelRef.current) memoryPanelRef.current.open = true;
+  }
+
+  function chooseMemoryShelf(shelf: MemoryShelf) {
+    setMemoryShelf(shelf);
+    setMemoryEvidence(
+      shelf === "verified"
+        ? "source-backed"
+        : shelf === "review"
+          ? "unverified"
+          : "user-confirmed",
+    );
+  }
+
+  function saveMemory() {
+    if (vaultStatus !== "ready") {
+      setMemoryError("Open encrypted private memory before saving anything.");
+      return;
+    }
+
+    const summary = memoryDraft.trim();
+    const privacy = screenPrivateText(summary);
+
+    if (!privacy.allowed) {
+      setMemoryError(privacy.reasons.join(" "));
+      setMemoryNotice("");
+      void recordSignedActivity(
+        "privacy_blocked",
+        "Sensitive information blocked from private memory",
+        "blocked",
+      );
+      return;
+    }
+
+    const sourceUrl = memorySource.trim()
+      ? normalizeSourceUrl(memorySource)
+      : null;
+
+    if (
+      (memorySource.trim() && !sourceUrl) ||
+      ((memoryShelf === "verified" || memoryEvidence === "source-backed") &&
+        !sourceUrl)
+    ) {
+      setMemoryError(
+        "Verified facts need a safe public HTTPS source. Private links and tracking details are rejected.",
+      );
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const candidate = validateMemoryRecord({
+      id: crypto.randomUUID(),
+      summary,
+      shelf: memoryShelf,
+      evidence:
+        memoryShelf === "always"
+          ? "user-confirmed"
+          : memoryShelf === "verified"
+            ? "source-backed"
+            : memoryEvidence,
+      sourceUrl,
+      approved: memoryShelf !== "review",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    if (!candidate) {
+      setMemoryError(
+        "That memory needs a safe summary, the right evidence label, and your approval.",
+      );
+      return;
+    }
+
+    setMemories((previous) =>
+      [...previous, candidate].slice(-MEMORY_LIMITS.maxRecords),
+    );
+    setMemoryDraft("");
+    setMemorySource("");
+    setMemoryError("");
+    setMemoryNotice(
+      candidate.shelf === "review"
+        ? "Saved for review. Jipity will not treat it as a fact or use it in chat."
+        : "Saved with your approval and encrypted on this device.",
+    );
+    void recordSignedActivity(
+      "memory_saved",
+      `Approved private-memory shelf updated: ${candidate.shelf}`,
+      "ok",
+      candidate.shelf,
+    );
+  }
+
+  function approveReview(record: MemoryRecord) {
+    const approved = validateMemoryRecord({
+      ...record,
+      shelf: "working",
+      evidence: "user-confirmed",
+      approved: true,
+      updatedAt: new Date().toISOString(),
+    });
+
+    if (!approved) return;
+    setMemories((previous) =>
+      previous.map((item) => (item.id === record.id ? approved : item)),
+    );
+    setMemoryNotice("Review item approved as working context, not a verified fact.");
+    void recordSignedActivity(
+      "memory_saved",
+      "Reviewed material approved as working context",
+      "ok",
+      "working",
+    );
+  }
+
+  function removeMemory(id: string) {
+    setMemories((previous) => previous.filter((record) => record.id !== id));
+    setMemoryNotice("The selected private memory was removed.");
+    void recordSignedActivity("memory_deleted", "User-approved private memory removed");
+  }
+
+  async function checkTaskSafety() {
+    setTaskBusy(true);
+
+    try {
+      const response = await fetch("/api/safety/task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: taskDraft }),
+      });
+
+      if (response.status === 401) {
+        window.location.replace("/login");
+        return;
+      }
+
+      const result = await response.json();
+
+      if (!response.ok || !result?.assessment) {
+        throw new Error(result?.error || "The task could not be checked safely.");
+      }
+
+      setTaskAssessment(result.assessment as TaskAssessment);
+      appendAudit(
+        `Task safety assessment: ${result.assessment.outcome}; execution disabled`,
+        typeof result.receipt === "string" ? result.receipt : undefined,
+      );
+    } catch (error: unknown) {
+      setMemoryError(
+        error instanceof Error ? error.message : "Task assessment is unavailable.",
+      );
+    } finally {
+      setTaskBusy(false);
+    }
+  }
+
+  async function verifySignedActivity() {
+    const receipts = audit
+      .map((entry) => entry.receipt)
+      .filter((receipt): receipt is string => typeof receipt === "string")
+      .slice(-100);
+
+    if (receipts.length === 0) {
+      setAuditVerification("No signed activity receipts are available yet.");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/safety/audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ receipts }),
+      });
+      const result = await response.json();
+
+      setAuditVerification(
+        response.ok && result.valid
+          ? `${result.verified} signed activity receipts verified. Deletion cannot be detected in device-only storage.`
+          : "At least one activity receipt is invalid or has been altered.",
+      );
+    } catch {
+      setAuditVerification("Signed activity could not be verified right now.");
+    }
+  }
 
   function stopAllAudio() {
     audioAbortRef.current?.abort();
@@ -295,6 +674,11 @@ export default function Home() {
             // The secure cookie still contains the authoritative signed usage.
           }
         }
+
+        appendAudit(
+          "Natural Jipity voice generated within the daily spending limit",
+          response.headers.get("X-Jipity-Audit-Receipt") || undefined,
+        );
 
         audioUrl = URL.createObjectURL(await response.blob());
         audioCacheRef.current.set(cacheKey, audioUrl);
@@ -445,13 +829,12 @@ export default function Home() {
           .join(" ")
           .slice(0, COST_GOVERNOR.maxMessageCharacters),
       );
-      setAudit((previous) => [
-        ...previous,
-        {
-          at: new Date().toISOString(),
-          event: "Voice message transcribed for review before sending",
-        },
-      ]);
+      appendAudit(
+        "Voice message transcribed for review before sending",
+        typeof result.auditReceipt === "string"
+          ? result.auditReceipt
+          : undefined,
+      );
     } catch (error: unknown) {
       setVoiceError(
         error instanceof Error ? error.message : "Microphone transcription failed.",
@@ -544,6 +927,38 @@ export default function Home() {
     const text = input.trim();
     if (!text || busy || recording || transcribing) return;
 
+    const cachedResearch =
+      mode === "standard" && vaultStatus === "ready"
+        ? findFreshResearch(research, text)
+        : null;
+
+    if (cachedResearch) {
+      const evidence =
+        cachedResearch.evidence === "source-backed"
+          ? "saved sources included; still review them"
+          : "unverified; review before relying on it";
+      const reusedAnswer = `${cachedResearch.answer}\n\nSaved research reused · ${evidence} · No new text-model charge.`;
+
+      setMessages((previous) => [
+        ...previous,
+        {
+          role: "user",
+          content: text.slice(0, COST_GOVERNOR.maxMessageCharacters),
+        },
+        { role: "assistant", content: reusedAnswer },
+      ]);
+      setInput("");
+      setMode("standard");
+      setCacheHits((previous) => previous + 1);
+      void recordSignedActivity(
+        "research_reused",
+        "Fresh approved research reused without a new text-model charge",
+      );
+
+      if (autoRead) void readResponse(reusedAnswer, messages.length + 1);
+      return;
+    }
+
     const day = currentDay();
     const currentUsage = usage.day === day ? usage : emptyUsage();
 
@@ -579,13 +994,7 @@ export default function Home() {
     setInput("");
     setMode("standard");
     setBusy(true);
-    setAudit((previous) => [
-      ...previous,
-      {
-        at: new Date().toISOString(),
-        event: `Message sent in ${mode} mode (${MODEL_CONFIG[mode].model})`,
-      },
-    ]);
+    appendAudit(`Message sent in ${mode} mode (${MODEL_CONFIG[mode].model})`);
 
     try {
       const response = await fetch("/api/chat", {
@@ -594,6 +1003,7 @@ export default function Home() {
         body: JSON.stringify({
           messages: next.slice(-COST_GOVERNOR.maxMessages),
           mode,
+          memories: selectApprovedMemories(memories, text),
         }),
       });
 
@@ -620,13 +1030,32 @@ export default function Home() {
         setUsage(normalizedUsage(data.governor));
       }
 
-      setAudit((previous) => [
-        ...previous,
-        {
-          at: new Date().toISOString(),
-          event: `Response received from ${data.model}; estimated cost $${estimatedCostUsd.toFixed(4)}`,
-        },
-      ]);
+      const freshResearch =
+        typeof data.text === "string" && typeof data.model === "string"
+          ? createResearchRecord(text, data.text, data.model)
+          : null;
+
+      if (freshResearch && vaultStatus === "ready") {
+        setResearch((previous) =>
+          [
+            ...previous.filter(
+              (record) =>
+                record.normalizedQuery !== freshResearch.normalizedQuery &&
+                Date.parse(record.expiresAt) > Date.now(),
+            ),
+            freshResearch,
+          ].slice(-MEMORY_LIMITS.maxResearchRecords),
+        );
+      }
+
+      const cachedTokens = Math.max(
+        0,
+        Number(data?.usage?.cachedInputTokens) || 0,
+      );
+      appendAudit(
+        `Response received from ${data.model}; estimated cost $${estimatedCostUsd.toFixed(4)}${cachedTokens ? `; ${cachedTokens} cached input tokens` : ""}`,
+        typeof data.auditReceipt === "string" ? data.auditReceipt : undefined,
+      );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";
       setMessages((previous) => [
@@ -643,6 +1072,14 @@ export default function Home() {
     stopRecording(true);
     setMessages([]);
     setAudit([]);
+    setMemories([]);
+    setResearch([]);
+    setCacheHits(0);
+    setMemoryDraft("");
+    setMemorySource("");
+    setMemoryNotice("Private conversations, memory, research, and activity were cleared.");
+    setAuditVerification("");
+    localStorage.removeItem(ENCRYPTED_VAULT_STORAGE_KEY);
     localStorage.removeItem("jipity_messages");
     localStorage.removeItem("jipity_audit");
   }
@@ -652,6 +1089,8 @@ export default function Home() {
     stopRecording(true);
 
     try {
+      await vaultWriteRef.current;
+      vaultKeyRef.current = null;
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
       window.location.replace("/login");
@@ -713,55 +1152,73 @@ export default function Home() {
               <div key={index} className={`msg ${message.role}`}>
                 <div className="message-copy">{message.content}</div>
                 {message.role === "assistant" && (
-                  <button
-                    className={`read-aloud-button${speakingMessage === index ? " speaking" : ""}`}
-                    onClick={() => readResponse(message.content, index)}
-                    disabled={!voiceAvailable}
-                    title={
-                      voiceAvailable
-                        ? "Read this response aloud using Jipity's selected voice"
-                        : "Speech playback is not available in this browser"
-                    }
-                  >
-                    {speakingMessage === index ? (
-                      <svg
-                        viewBox="0 0 20 20"
-                        aria-hidden="true"
-                        className="read-aloud-icon"
-                      >
-                        <rect
-                          x="5"
-                          y="5"
-                          width="10"
-                          height="10"
-                          rx="2"
-                          fill="currentColor"
-                        />
-                      </svg>
-                    ) : (
-                      <svg
-                        viewBox="0 0 20 20"
-                        aria-hidden="true"
-                        className="read-aloud-icon"
-                        fill="none"
-                      >
-                        <path
-                          d="M3 8h3l4-3v10l-4-3H3z"
-                          fill="currentColor"
-                        />
-                        <path
-                          d="M13 7c1.2 1 1.2 5 0 6m2.7-8c2.1 1.8 2.1 8.2 0 10"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                        />
-                      </svg>
-                    )}
-                    {voiceLoading === index
-                      ? "Loading voice…"
-                      : speakingMessage === index
-                        ? "Stop reading" : "Read aloud"}
-                  </button>
+                  <div className="message-actions">
+                    <button
+                      className={`read-aloud-button${speakingMessage === index ? " speaking" : ""}`}
+                      onClick={() => readResponse(message.content, index)}
+                      disabled={!voiceAvailable}
+                      title={
+                        voiceAvailable
+                          ? "Read this response aloud using Jipity's selected voice"
+                          : "Speech playback is not available in this browser"
+                      }
+                    >
+                      {speakingMessage === index ? (
+                        <svg
+                          viewBox="0 0 20 20"
+                          aria-hidden="true"
+                          className="read-aloud-icon"
+                        >
+                          <rect
+                            x="5"
+                            y="5"
+                            width="10"
+                            height="10"
+                            rx="2"
+                            fill="currentColor"
+                          />
+                        </svg>
+                      ) : (
+                        <svg
+                          viewBox="0 0 20 20"
+                          aria-hidden="true"
+                          className="read-aloud-icon"
+                          fill="none"
+                        >
+                          <path
+                            d="M3 8h3l4-3v10l-4-3H3z"
+                            fill="currentColor"
+                          />
+                          <path
+                            d="M13 7c1.2 1 1.2 5 0 6m2.7-8c2.1 1.8 2.1 8.2 0 10"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                      )}
+                      {voiceLoading === index
+                        ? "Loading voice…"
+                        : speakingMessage === index
+                          ? "Stop reading" : "Read aloud"}
+                    </button>
+                    <button
+                      className="remember-button"
+                      onClick={() => stageMemory(message.content)}
+                      disabled={vaultStatus !== "ready"}
+                      title="Review and approve a short, non-sensitive memory"
+                    >
+                      Remember
+                    </button>
+                    <button
+                      className="remember-button review-action"
+                      onClick={() => stageMemory(message.content, "review")}
+                      disabled={vaultStatus !== "ready"}
+                      title="Set material aside for review without treating it as true"
+                    >
+                      Review
+                    </button>
+                  </div>
                 )}
               </div>
             ))}
@@ -888,8 +1345,8 @@ export default function Home() {
           )}
 
           <div className="notice">
-            Signed server checks protect this session. Conversation stays in
-            this browser.
+            Signed server checks protect this session. Safe approved memory is
+            encrypted on this device; sensitive details are never retained.
           </div>
         </section>
 
@@ -1001,6 +1458,218 @@ export default function Home() {
             </div>
           </section>
 
+          <details ref={memoryPanelRef} className="card panel control-panel memory-panel">
+            <summary>Private memory &amp; evidence</summary>
+            <p className="panel-note">
+              {vaultStatus === "ready"
+                ? "AES-256 encrypted on this device. Only safe notes you approve can inform Jipity."
+                : vaultStatus === "loading"
+                  ? "Opening encrypted device memory…"
+                  : "Encrypted memory is unavailable; conversation still works."}
+            </p>
+            <div className="memory-counts">
+              <span>{memories.filter((record) => record.approved).length} approved</span>
+              <span>
+                {memories.filter((record) => record.shelf === "review").length} review
+              </span>
+              <span>{cacheHits} free reuses</span>
+            </div>
+
+            <details className="policy-details">
+              <summary>Always remember</summary>
+              <ul className="policy-list">
+                {ALWAYS_REMEMBER_RULES.map((rule) => (
+                  <li key={rule}>{rule}</li>
+                ))}
+              </ul>
+            </details>
+            <details className="policy-details never-policy">
+              <summary>Never remember</summary>
+              <ul className="policy-list">
+                {NEVER_REMEMBER_RULES.map((rule) => (
+                  <li key={rule}>{rule}</li>
+                ))}
+              </ul>
+            </details>
+
+            <div className="memory-editor">
+              <label htmlFor="jipity-memory-note">A note you approve</label>
+              <textarea
+                id="jipity-memory-note"
+                className="memory-textarea"
+                value={memoryDraft}
+                onChange={(event) => setMemoryDraft(event.target.value)}
+                maxLength={MEMORY_LIMITS.maxSummaryCharacters}
+                placeholder="A short, non-sensitive preference or fact…"
+              />
+              <label htmlFor="jipity-memory-shelf">Where should it live?</label>
+              <select
+                id="jipity-memory-shelf"
+                className="memory-select"
+                value={memoryShelf}
+                onChange={(event) =>
+                  chooseMemoryShelf(event.target.value as MemoryShelf)
+                }
+              >
+                <option value="always">Always · standing preference</option>
+                <option value="verified">Verified · reviewed public source</option>
+                <option value="working">Working · useful approved context</option>
+                <option value="review">Review · unverified, kept separate</option>
+              </select>
+
+              {memoryShelf === "review" && (
+                <select
+                  className="memory-select"
+                  aria-label="Review evidence status"
+                  value={memoryEvidence}
+                  onChange={(event) =>
+                    setMemoryEvidence(event.target.value as EvidenceLabel)
+                  }
+                >
+                  <option value="unverified">Unverified</option>
+                  <option value="disputed">Disputed</option>
+                  <option value="symbolic">Symbolic</option>
+                </select>
+              )}
+
+              {memoryShelf === "working" && (
+                <select
+                  className="memory-select"
+                  aria-label="Working memory evidence status"
+                  value={memoryEvidence}
+                  onChange={(event) =>
+                    setMemoryEvidence(event.target.value as EvidenceLabel)
+                  }
+                >
+                  <option value="user-confirmed">User-confirmed</option>
+                  <option value="inference">Inference · not a fact</option>
+                  <option value="source-backed">Public source available</option>
+                </select>
+              )}
+
+              {(memoryShelf === "verified" || memoryEvidence === "source-backed") && (
+                <input
+                  className="memory-source"
+                  type="url"
+                  value={memorySource}
+                  onChange={(event) => setMemorySource(event.target.value)}
+                  placeholder="Public https:// source"
+                />
+              )}
+
+              <button
+                className="smallbtn memory-save"
+                onClick={saveMemory}
+                disabled={vaultStatus !== "ready" || !memoryDraft.trim()}
+              >
+                {memoryShelf === "review"
+                  ? "Save separately for review"
+                  : "Approve & save encrypted"}
+              </button>
+            </div>
+
+            {memoryError && (
+              <div className="memory-error" role="alert">
+                {memoryError}
+              </div>
+            )}
+            {memoryNotice && <div className="memory-notice">{memoryNotice}</div>}
+
+            {memories.length > 0 && (
+              <div className="memory-list">
+                {memories
+                  .slice(-8)
+                  .reverse()
+                  .map((record) => (
+                    <article key={record.id} className="memory-item">
+                      <div className="memory-item-heading">
+                        <span className={`memory-badge ${record.shelf}`}>
+                          {record.shelf}
+                        </span>
+                        <span className="evidence-label">{record.evidence}</span>
+                      </div>
+                      <p>{record.summary}</p>
+                      <div className="memory-item-actions">
+                        {record.shelf === "review" && (
+                          <button onClick={() => approveReview(record)}>
+                            Approve as working
+                          </button>
+                        )}
+                        <button onClick={() => removeMemory(record.id)}>
+                          Delete
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+              </div>
+            )}
+
+            <p className="panel-note cache-note">
+              {research.length} safe research answers cached. Time-sensitive
+              material expires after one hour; other research expires after seven
+              days.
+            </p>
+          </details>
+
+          <details className="card panel control-panel task-panel">
+            <summary>Task safety &amp; approvals</summary>
+            <p className="panel-note">
+              Check a proposed task without running a model, searching, sending,
+              spending, or starting unattended work.
+            </p>
+            <div className="tool-list">
+              {GUARDED_TOOLS.map((tool) => (
+                <div key={tool.id} className="tool-item" title={tool.reason}>
+                  <span>{tool.label}</span>
+                  <span className={`tool-state ${tool.access}`}>
+                    {tool.access === "available"
+                      ? "Ready"
+                      : tool.access === "approval-required"
+                        ? "Ask first"
+                        : "Blocked"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <textarea
+              className="memory-textarea task-input"
+              value={taskDraft}
+              onChange={(event) => setTaskDraft(event.target.value)}
+              maxLength={TASK_LIMITS.maxDescriptionCharacters}
+              placeholder="Describe a safe proposed task…"
+            />
+            <button
+              className="smallbtn memory-save"
+              onClick={checkTaskSafety}
+              disabled={taskBusy || !taskDraft.trim()}
+            >
+              {taskBusy ? "Checking safely…" : "Check task safety · free"}
+            </button>
+
+            {taskAssessment && (
+              <div className={`task-result ${taskAssessment.outcome}`}>
+                <strong>
+                  {taskAssessment.outcome === "blocked"
+                    ? "Blocked"
+                    : taskAssessment.outcome === "approval-required"
+                      ? "Your approval would be required"
+                      : "Safe enough for your review"}
+                </strong>
+                {[...taskAssessment.reasons, ...taskAssessment.requiredApprovals].map(
+                  (reason) => (
+                    <p key={reason}>{reason}</p>
+                  ),
+                )}
+                <p>
+                  Nothing executed. Maximum {taskAssessment.limits.maxSteps} steps,
+                  ${taskAssessment.limits.maxTaskBudgetUsd.toFixed(2)}, and{" "}
+                  {taskAssessment.limits.maxRuntimeMinutes} minutes if a later
+                  approved task runner is added.
+                </p>
+              </div>
+            )}
+          </details>
+
           <details className="card panel">
             <summary>Safety &amp; activity</summary>
             <div className="row">
@@ -1012,12 +1681,22 @@ export default function Home() {
             <button className="smallbtn memorybtn" onClick={clearLocal}>
               Clear local memory &amp; log
             </button>
+            <button
+              className="smallbtn memorybtn audit-verify"
+              onClick={verifySignedActivity}
+            >
+              Verify signed activity
+            </button>
+            {auditVerification && (
+              <div className="audit-verification">{auditVerification}</div>
+            )}
             <div className="audit">
               {audit
                 .slice()
                 .reverse()
                 .map((entry, index) => (
                   <div key={index}>
+                    {entry.signed && <span className="audit-badge">Signed </span>}
                     {entry.at}: {entry.event}
                   </div>
                 ))}

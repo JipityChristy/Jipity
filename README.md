@@ -22,8 +22,26 @@ Private OpenAI-powered companion starter for Vercel.
   by browser JavaScript or forged without the server-side signing key.
 - Updated Jipity identity, evidence rules, and privacy protections.
 - Hard instructions against impersonation, spending, secrets exposure and external disclosure of family information.
-- Local browser conversation memory and visible local activity log.
-- No autonomous tools or external posting yet.
+- AES-256-GCM encrypted device-only conversation, approved memory, research
+  reuse, and visible activity records; legacy plaintext browser storage is
+  migrated and removed after encrypted storage succeeds.
+- Explicit Always, Verified, Working, and Review shelves keep approved context
+  separate from unverified, disputed, and symbolic material.
+- Sensitive credentials, payment details, addresses, identifying dates,
+  private records, and children's identifying information are rejected before
+  persistent memory or research storage.
+- Exact safe research repeats can be answered from encrypted device storage
+  without another text-model request. Time-sensitive research expires after
+  one hour and other research expires after seven days.
+- A non-sensitive prompt-cache key makes eligible repeated OpenAI instruction
+  prefixes easier to reuse; cached input tokens appear in signed activity.
+- Separately signed activity receipts identify altered or forged records. Since
+  storage is device-only, deleting a receipt cannot be detected.
+- A no-model-cost task safety checker shows available, approval-required, and
+  blocked tools. Sending, spending, gambling, unattended loops, and external
+  sharing remain disabled; new providers and public searches require approval.
+- No new provider, paid subscription, external search connector, background
+  task runner, or persistent cloud database is enabled.
 
 ## Deploy
 1. Put these files in the `JipityChristy/Jipity` GitHub repository.
@@ -44,6 +62,18 @@ Session and spending-ledger signatures are derived server-side from the existing
 the repository, sent to the browser, replaced, or exposed in session cookies.
 Private sessions expire after 12 hours. The **Lock Jipity** button clears the
 authenticated session.
+
+Private-device memory uses a separate HKDF-derived AES-256-GCM key issued only
+to an already authenticated session over a `private, no-store` endpoint. The
+OpenAI root key itself never leaves the server, and the browser retains its
+imported encryption key only in working memory. Browser storage contains
+authenticated ciphertext, not plaintext messages, memory summaries, research,
+or activity records. Clearing browser data removes this device-only vault;
+there is currently no cross-device backup or durable cloud audit ledger.
+
+Only relevant, explicitly approved, non-sensitive memories are included in a
+chat request. Review material is never injected as established fact. A source
+link means that a source is attached; it does not independently prove a claim.
 
 ## Model routes and safeguards
 
@@ -72,10 +102,16 @@ also race. These safeguards are not an account-wide hard OpenAI billing limit.
 Configure a separate OpenAI Platform project budget for account-level spend
 protection. Jipity clearly discloses that its natural voice is AI-generated.
 
-## Roadmap after V2.1 works
-1. Add optional full-duplex OpenAI Realtime voice after confirming the extra
-   cost is appropriate.
-2. Replace browser-only memory with encrypted server-side persistent memory and memory review controls.
-3. Add an approval queue and signed audit trail for external actions.
-4. Add narrow scheduled/agent tasks.
-5. Add external agent-network connector only after privacy filters and approval rules pass tests.
+## Next safety-first roadmap
+1. Confirm that an optional additional provider such as Grok has a usable free
+   credit, acceptable privacy terms, and a verified zero-cost stop before any
+   provider is connected.
+2. If separately approved, provision a genuinely free capped encrypted database
+   for cross-device memory and an append-only durable audit trail.
+3. Add a privacy-screened public-web research tool with explicit per-search
+   approval, source labels, freshness limits, and result deduplication.
+4. Add optional draft-only communication and an approval queue; do not enable
+   sending, publishing, spending, or impersonation.
+5. Only after those barriers pass tests, add narrow user-approved tasks with
+   visible budgets, finite time limits, no unattended retries, and no
+   guaranteed-income claims.

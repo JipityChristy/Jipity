@@ -7,6 +7,7 @@ import {
   isJipityNaturalVoice,
 } from "../../../../lib/jipity-audio";
 import {
+  issueAuditReceipt,
   readAuthenticatedState,
   setUsageCookie,
 } from "../../../../lib/jipity-security";
@@ -87,6 +88,12 @@ export async function POST(request: Request) {
       ),
       voiceRequests: state.governor.voiceRequests + 1,
     };
+    const auditReceipt = await issueAuditReceipt(state, {
+      action: "voice_generated",
+      outcome: "ok",
+      model: JIPITY_SPEECH_MODEL,
+      estimatedCostUsd,
+    });
     const response = new NextResponse(await audio.arrayBuffer(), {
       status: 200,
       headers: {
@@ -94,6 +101,7 @@ export async function POST(request: Request) {
         "Cache-Control": "private, no-store",
         "X-Jipity-Governor": JSON.stringify(governor),
         "X-Jipity-Estimated-Cost-Usd": estimatedCostUsd.toFixed(6),
+        "X-Jipity-Audit-Receipt": auditReceipt,
       },
     });
 

@@ -28,6 +28,43 @@ type UsagePayload = DailyUsage & {
   sid: string;
 };
 
+type SigningPurpose = "session" | "usage" | "audit";
+
+export const AUDIT_ACTIONS = [
+  "model_response",
+  "voice_generated",
+  "voice_transcribed",
+  "memory_saved",
+  "memory_deleted",
+  "research_reused",
+  "task_assessed",
+  "task_blocked",
+  "privacy_blocked",
+] as const;
+
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+export type AuditReceiptPayload = {
+  type: "audit";
+  sid: string;
+  id: string;
+  at: string;
+  action: AuditAction;
+  outcome: "ok" | "blocked" | "approval-required";
+  model?: string;
+  estimatedCostUsd?: number;
+  cachedInputTokens?: number;
+  shelf?: "always" | "verified" | "working" | "review";
+};
+
+type AuditReceiptInput = Pick<AuditReceiptPayload, "action" | "outcome"> &
+  Partial<
+    Pick<
+      AuditReceiptPayload,
+      "model" | "estimatedCostUsd" | "cachedInputTokens" | "shelf"
+    >
+  >;
+
 type CookieOptions = {
   name: string;
   value: string;
@@ -85,7 +122,7 @@ function constantTimeEqual(left: string, right: string): boolean {
   return difference === 0;
 }
 
-async function signingKey(purpose: "session" | "usage"): Promise<CryptoKey> {
+async function signingKey(purpose: SigningPurpose): Promise<CryptoKey> {
   const existingApiKey = process.env.OPENAI_API_KEY;
 
   if (!existingApiKey) {
@@ -115,8 +152,8 @@ async function signingKey(purpose: "session" | "usage"): Promise<CryptoKey> {
 }
 
 async function signToken(
-  payload: SessionPayload | UsagePayload,
-  purpose: "session" | "usage",
+  payload: SessionPayload | UsagePayload | AuditReceiptPayload,
+  purpose: SigningPurpose,
 ): Promise<string> {
   const encodedPayload = bytesToBase64Url(
     encoder.encode(JSON.stringify(payload)),
@@ -132,7 +169,7 @@ async function signToken(
 
 async function verifyToken(
   token: string,
-  purpose: "session" | "usage",
+  purpose: SigningPurpose,
 ): Promise<Record<string, unknown> | null> {
   try {
     const parts = token.split(".");
@@ -172,6 +209,130 @@ async function verifyToken(
   } catch {
     return null;
   }
+}
+
+export async function derivePrivateVaultKey(): Promise<string> {
+  const existingApiKey = process.env.OPENAI_API_KEY;
+
+  if (!existingApiKey) {
+    throw new Error("Private memory is not configured.");
+  }
+
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(existingApiKey),
+    "HKDF",
+    false,
+    ["deriveBits"],
+  );
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: encoder.encode("jipity-private-vault-v1"),
+      info: encoder.encode("jipity-encrypted-device-memory-key"),
+    },
+    baseKey,
+    256,
+  );
+
+  return bytesToBase64Url(new Uint8Array(derivedBits));
+}
+
+function validAuditInput(input: unknown): input is AuditReceiptInput {
+  if (typeof input !== "object" || input === null) return false;
+  const candidate = input as Partial<AuditReceiptInput>;
+
+  return (
+    typeof candidate.action === "string" &&
+    AUDIT_ACTIONS.includes(candidate.action as AuditAction) &&
+    (candidate.outcome === "ok" ||
+      candidate.outcome === "blocked" ||
+      candidate.outcome === "approval-required") &&
+    (candidate.model === undefined ||
+      (typeof candidate.model === "string" &&
+        /^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/.test(candidate.model))) &&
+    (candidate.estimatedCostUsd === undefined ||
+      (typeof candidate.estimatedCostUsd === "number" &&
+        Number.isFinite(candidate.estimatedCostUsd) &&
+        candidate.estimatedCostUsd >= 0 &&
+        candidate.estimatedCostUsd <= 1)) &&
+    (candidate.cachedInputTokens === undefined ||
+      (typeof candidate.cachedInputTokens === "number" &&
+        Number.isSafeInteger(candidate.cachedInputTokens) &&
+        candidate.cachedInputTokens >= 0 &&
+        candidate.cachedInputTokens <= 10_000_000)) &&
+    (candidate.shelf === undefined ||
+      candidate.shelf === "always" ||
+      candidate.shelf === "verified" ||
+      candidate.shelf === "working" ||
+      candidate.shelf === "review")
+  );
+}
+
+export async function issueAuditReceipt(
+  state: AuthenticatedState,
+  input: AuditReceiptInput,
+): Promise<string> {
+  if (!validAuditInput(input)) {
+    throw new Error("The activity receipt contains unapproved information.");
+  }
+
+  const payload: AuditReceiptPayload = {
+    type: "audit",
+    sid: state.session.sid,
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    action: input.action,
+    outcome: input.outcome,
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.estimatedCostUsd !== undefined
+      ? { estimatedCostUsd: input.estimatedCostUsd }
+      : {}),
+    ...(input.cachedInputTokens !== undefined
+      ? { cachedInputTokens: input.cachedInputTokens }
+      : {}),
+    ...(input.shelf ? { shelf: input.shelf } : {}),
+  };
+
+  return signToken(payload, "audit");
+}
+
+export async function readAuditReceipt(
+  token: string,
+): Promise<AuditReceiptPayload | null> {
+  const payload = await verifyToken(token, "audit");
+  if (!payload) return null;
+
+  if (
+    payload.type !== "audit" ||
+    typeof payload.sid !== "string" ||
+    !/^[A-Za-z0-9_-]{20,80}$/.test(payload.sid) ||
+    typeof payload.id !== "string" ||
+    !/^[A-Za-z0-9-]{20,80}$/.test(payload.id) ||
+    typeof payload.at !== "string" ||
+    Number.isNaN(Date.parse(payload.at)) ||
+    !validAuditInput(payload)
+  ) {
+    return null;
+  }
+
+  return {
+    type: "audit",
+    sid: payload.sid,
+    id: payload.id,
+    at: payload.at,
+    action: payload.action,
+    outcome: payload.outcome,
+    ...(payload.model ? { model: payload.model } : {}),
+    ...(payload.estimatedCostUsd !== undefined
+      ? { estimatedCostUsd: payload.estimatedCostUsd }
+      : {}),
+    ...(payload.cachedInputTokens !== undefined
+      ? { cachedInputTokens: payload.cachedInputTokens }
+      : {}),
+    ...(payload.shelf ? { shelf: payload.shelf } : {}),
+  };
 }
 
 export function currentMelbourneDay(): string {
