@@ -13,6 +13,8 @@ export type DailyUsage = {
   requests: number;
   spiritualRequests: number;
   deepRequests: number;
+  voiceRequests: number;
+  transcriptionRequests: number;
 };
 
 type SessionPayload = {
@@ -185,6 +187,8 @@ export function emptyServerUsage(): DailyUsage {
     requests: 0,
     spiritualRequests: 0,
     deepRequests: 0,
+    voiceRequests: 0,
+    transcriptionRequests: 0,
   };
 }
 
@@ -282,6 +286,15 @@ async function readUsage(
   const payload = await verifyToken(token, "usage");
   if (!payload) return null;
 
+  // Sessions signed before natural voice was introduced do not contain these
+  // fields. Keep their original signature valid and normalize both to zero.
+  const voiceRequests =
+    payload.voiceRequests === undefined ? 0 : payload.voiceRequests;
+  const transcriptionRequests =
+    payload.transcriptionRequests === undefined
+      ? 0
+      : payload.transcriptionRequests;
+
   if (
     payload.type !== "usage" ||
     payload.sid !== session.sid ||
@@ -294,6 +307,8 @@ async function readUsage(
     !validCount(payload.requests) ||
     !validCount(payload.spiritualRequests) ||
     !validCount(payload.deepRequests) ||
+    !validCount(voiceRequests) ||
+    !validCount(transcriptionRequests) ||
     payload.spiritualRequests + payload.deepRequests > payload.requests
   ) {
     return null;
@@ -307,6 +322,8 @@ async function readUsage(
     requests: payload.requests,
     spiritualRequests: payload.spiritualRequests,
     deepRequests: payload.deepRequests,
+    voiceRequests,
+    transcriptionRequests,
   };
 }
 

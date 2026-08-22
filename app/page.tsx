@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { JipityMark } from "./components/jipity-mark";
 import {
   COST_GOVERNOR,
@@ -12,6 +12,11 @@ import {
   speechPlaybackSupported,
   stopJipitySpeech,
 } from "../lib/jipity-voice";
+import {
+  JIPITY_VOICES,
+  isJipityVoiceChoice,
+  type JipityVoiceChoice,
+} from "../lib/jipity-audio";
 
 type Message = { role: "user" | "assistant"; content: string };
 type Audit = { at: string; event: string };
@@ -21,6 +26,8 @@ type DailyUsage = {
   requests: number;
   spiritualRequests: number;
   deepRequests: number;
+  voiceRequests: number;
+  transcriptionRequests: number;
 };
 
 const MODE_LABELS: Record<JipityMode, string> = {
@@ -42,6 +49,8 @@ function emptyUsage(): DailyUsage {
     requests: 0,
     spiritualRequests: 0,
     deepRequests: 0,
+    voiceRequests: 0,
+    transcriptionRequests: 0,
   };
 }
 
@@ -57,6 +66,8 @@ function normalizedUsage(value: Partial<DailyUsage>): DailyUsage {
     requests: numberOrZero(value.requests),
     spiritualRequests: numberOrZero(value.spiritualRequests),
     deepRequests: numberOrZero(value.deepRequests),
+    voiceRequests: numberOrZero(value.voiceRequests),
+    transcriptionRequests: numberOrZero(value.transcriptionRequests),
   };
 }
 
@@ -70,6 +81,19 @@ export default function Home() {
   const [voiceAvailable, setVoiceAvailable] = useState(false);
   const [autoRead, setAutoRead] = useState(false);
   const [speakingMessage, setSpeakingMessage] = useState<number | null>(null);
+  const [selectedVoice, setSelectedVoice] = useState<JipityVoiceChoice>("cedar");
+  const [voiceLoading, setVoiceLoading] = useState<number | null>(null);
+  const [voiceError, setVoiceError] = useState("");
+  const [microphoneAvailable, setMicrophoneAvailable] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCacheRef = useRef<Map<string, string>>(new Map());
+  const audioAbortRef = useRef<AbortController | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderStreamRef = useRef<MediaStream | null>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recordingStartedAtRef = useRef(0);
 
   useEffect(() => {
     try {
@@ -115,16 +139,46 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    setVoiceAvailable(speechPlaybackSupported());
+    setVoiceAvailable(
+      speechPlaybackSupported() || typeof window.Audio === "function",
+    );
+    setMicrophoneAvailable(
+      Boolean(
+        navigator.mediaDevices?.getUserMedia &&
+          typeof window.MediaRecorder !== "undefined",
+      ),
+    );
 
     try {
       setAutoRead(localStorage.getItem("jipity_auto_read") === "true");
+      const savedVoice = localStorage.getItem("jipity_voice_choice");
+
+      if (isJipityVoiceChoice(savedVoice)) setSelectedVoice(savedVoice);
     } catch {
       // Voice playback still works when browser preference storage is unavailable.
     }
 
     return () => {
       stopJipitySpeech();
+      audioAbortRef.current?.abort();
+      currentAudioRef.current?.pause();
+
+      for (const objectUrl of audioCacheRef.current.values()) {
+        URL.revokeObjectURL(objectUrl);
+      }
+
+      audioCacheRef.current.clear();
+
+      if (recordingTimerRef.current) {
+        clearTimeout(recordingTimerRef.current);
+      }
+
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        recorderRef.current.onstop = null;
+        recorderRef.current.stop();
+      }
+
+      recorderStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
 
@@ -149,6 +203,14 @@ export default function Home() {
     0,
     COST_GOVERNOR.maxDeepRequestsPerDay - usage.deepRequests,
   );
+  const remainingVoice = Math.max(
+    0,
+    COST_GOVERNOR.maxVoiceRequestsPerDay - usage.voiceRequests,
+  );
+  const remainingMicrophone = Math.max(
+    0,
+    COST_GOVERNOR.maxTranscriptionRequestsPerDay - usage.transcriptionRequests,
+  );
   const remainingBudget = Math.max(
     0,
     COST_GOVERNOR.dailyBudgetUsd - usage.spentUsd,
@@ -158,25 +220,126 @@ export default function Home() {
     Math.min(100, (remainingBudget / COST_GOVERNOR.dailyBudgetUsd) * 100),
   );
 
-  function readResponse(text: string, messageIndex: number) {
-    if (speakingMessage === messageIndex) {
-      stopJipitySpeech();
-      setSpeakingMessage(null);
+  function stopAllAudio() {
+    audioAbortRef.current?.abort();
+    audioAbortRef.current = null;
+    currentAudioRef.current?.pause();
+    currentAudioRef.current = null;
+    stopJipitySpeech();
+    setSpeakingMessage(null);
+    setVoiceLoading(null);
+  }
+
+  async function readResponse(text: string, messageIndex: number) {
+    if (speakingMessage === messageIndex || voiceLoading === messageIndex) {
+      stopAllAudio();
       return;
     }
+
+    stopAllAudio();
+    setVoiceError("");
 
     const finished = () => {
       setSpeakingMessage((current) =>
         current === messageIndex ? null : current,
       );
     };
-    const utterance = speakJipityResponse(text, {
-      onStart: () => setSpeakingMessage(messageIndex),
-      onEnd: finished,
-      onError: finished,
-    });
 
-    if (utterance) setSpeakingMessage(messageIndex);
+    if (selectedVoice === "device") {
+      const utterance = speakJipityResponse(text, {
+        onStart: () => setSpeakingMessage(messageIndex),
+        onEnd: finished,
+        onError: finished,
+      });
+
+      if (utterance) setSpeakingMessage(messageIndex);
+      else setVoiceError("Your device voice is unavailable in this browser.");
+      return;
+    }
+
+    const playableText = text.trim().slice(0, COST_GOVERNOR.maxSpeechCharacters);
+    if (!playableText) return;
+
+    const cacheKey = `${selectedVoice}:${playableText}`;
+    const controller = new AbortController();
+    audioAbortRef.current = controller;
+    setVoiceLoading(messageIndex);
+
+    try {
+      let audioUrl = audioCacheRef.current.get(cacheKey);
+
+      if (!audioUrl) {
+        const response = await fetch("/api/audio/speech", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: playableText, voice: selectedVoice }),
+          signal: controller.signal,
+        });
+
+        if (response.status === 401) {
+          window.location.replace("/login");
+          return;
+        }
+
+        if (!response.ok) {
+          const result = await response.json();
+          throw new Error(result?.error || "Jipity could not create that voice.");
+        }
+
+        const signedGovernor = response.headers.get("X-Jipity-Governor");
+
+        if (signedGovernor) {
+          try {
+            setUsage(normalizedUsage(JSON.parse(signedGovernor)));
+          } catch {
+            // The secure cookie still contains the authoritative signed usage.
+          }
+        }
+
+        audioUrl = URL.createObjectURL(await response.blob());
+        audioCacheRef.current.set(cacheKey, audioUrl);
+
+        if (audioCacheRef.current.size > 24) {
+          const oldestKey = audioCacheRef.current.keys().next().value;
+
+          if (oldestKey) {
+            const oldestUrl = audioCacheRef.current.get(oldestKey);
+            if (oldestUrl) URL.revokeObjectURL(oldestUrl);
+            audioCacheRef.current.delete(oldestKey);
+          }
+        }
+      }
+
+      if (controller.signal.aborted) return;
+
+      const audio = new Audio(audioUrl);
+      currentAudioRef.current = audio;
+      audio.onplay = () => {
+        setVoiceLoading(null);
+        setSpeakingMessage(messageIndex);
+      };
+      audio.onended = () => {
+        if (currentAudioRef.current === audio) currentAudioRef.current = null;
+        finished();
+      };
+      audio.onerror = () => {
+        if (currentAudioRef.current === audio) currentAudioRef.current = null;
+        finished();
+        setVoiceError("That voice could not be played. Try another voice.");
+      };
+
+      await audio.play();
+    } catch (error: unknown) {
+      if (!controller.signal.aborted) {
+        const message =
+          error instanceof Error ? error.message : "Voice playback failed.";
+        setVoiceError(message);
+        finished();
+      }
+    } finally {
+      if (audioAbortRef.current === controller) audioAbortRef.current = null;
+      setVoiceLoading((current) => (current === messageIndex ? null : current));
+    }
   }
 
   function toggleAutoRead() {
@@ -190,14 +353,196 @@ export default function Home() {
     }
 
     if (!enabled) {
-      stopJipitySpeech();
-      setSpeakingMessage(null);
+      stopAllAudio();
+    }
+  }
+
+  function chooseVoice(choice: string) {
+    if (!isJipityVoiceChoice(choice)) return;
+
+    stopAllAudio();
+    setSelectedVoice(choice);
+    setVoiceError("");
+
+    try {
+      localStorage.setItem("jipity_voice_choice", choice);
+    } catch {
+      // Saving this preference is optional.
+    }
+  }
+
+  function stopRecording(cancel = false) {
+    if (recordingTimerRef.current) {
+      clearTimeout(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+
+    const recorder = recorderRef.current;
+
+    if (recorder && recorder.state !== "inactive") {
+      if (cancel) recorder.onstop = null;
+      recorder.stop();
+    }
+
+    if (cancel) {
+      recorderRef.current = null;
+      recorderStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recorderStreamRef.current = null;
+    }
+
+    setRecording(false);
+  }
+
+  async function transcribeRecording(blob: Blob, durationSeconds: number) {
+    if (blob.size === 0) {
+      setVoiceError("I could not hear a recording. Please try again.");
+      return;
+    }
+
+    setTranscribing(true);
+    setVoiceError("");
+
+    try {
+      const baseType = blob.type.split(";")[0] || "audio/webm";
+      const extension =
+        baseType === "audio/mp4"
+          ? "m4a"
+          : baseType === "audio/ogg"
+            ? "ogg"
+            : "webm";
+      const form = new FormData();
+      form.append(
+        "audio",
+        new File([blob], `jipity-voice.${extension}`, { type: baseType }),
+      );
+      form.append("durationSeconds", String(durationSeconds));
+
+      const response = await fetch("/api/audio/transcribe", {
+        method: "POST",
+        body: form,
+      });
+
+      if (response.status === 401) {
+        window.location.replace("/login");
+        return;
+      }
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result?.error || "Jipity could not hear that message.");
+      }
+
+      if (result?.governor) setUsage(normalizedUsage(result.governor));
+
+      if (typeof result.text !== "string" || !result.text.trim()) {
+        throw new Error("I could not make out the words. Please try again.");
+      }
+
+      setInput((previous) =>
+        [previous.trim(), result.text.trim()]
+          .filter(Boolean)
+          .join(" ")
+          .slice(0, COST_GOVERNOR.maxMessageCharacters),
+      );
+      setAudit((previous) => [
+        ...previous,
+        {
+          at: new Date().toISOString(),
+          event: "Voice message transcribed for review before sending",
+        },
+      ]);
+    } catch (error: unknown) {
+      setVoiceError(
+        error instanceof Error ? error.message : "Microphone transcription failed.",
+      );
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      stopRecording();
+      return;
+    }
+
+    if (!microphoneAvailable || transcribing || remainingMicrophone === 0) {
+      return;
+    }
+
+    setVoiceError("");
+    let stream: MediaStream | null = null;
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+      recorderStreamRef.current = stream;
+
+      const preferredTypes = [
+        "audio/webm;codecs=opus",
+        "audio/mp4",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+      ];
+      const mimeType =
+        typeof MediaRecorder.isTypeSupported === "function"
+          ? preferredTypes.find((type) => MediaRecorder.isTypeSupported(type))
+          : undefined;
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType } : undefined,
+      );
+      const chunks: BlobPart[] = [];
+      recorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.push(event.data);
+      };
+      recorder.onerror = () => {
+        setRecording(false);
+        setVoiceError("The microphone stopped unexpectedly. Please try again.");
+        recorderStreamRef.current?.getTracks().forEach((track) => track.stop());
+        recorderStreamRef.current = null;
+      };
+      recorder.onstop = () => {
+        const durationSeconds = Math.min(
+          COST_GOVERNOR.maxRecordingSeconds,
+          Math.max(1, Math.ceil((Date.now() - recordingStartedAtRef.current) / 1000)),
+        );
+        const recordingType = recorder.mimeType || mimeType || "audio/webm";
+        const blob = new Blob(chunks, { type: recordingType });
+        recorderRef.current = null;
+        recorderStreamRef.current?.getTracks().forEach((track) => track.stop());
+        recorderStreamRef.current = null;
+        setRecording(false);
+        void transcribeRecording(blob, durationSeconds);
+      };
+
+      recordingStartedAtRef.current = Date.now();
+      recorder.start();
+      setRecording(true);
+      recordingTimerRef.current = setTimeout(() => {
+        stopRecording();
+      }, COST_GOVERNOR.maxRecordingSeconds * 1000);
+    } catch (error: unknown) {
+      stream?.getTracks().forEach((track) => track.stop());
+      recorderStreamRef.current = null;
+      recorderRef.current = null;
+      setRecording(false);
+      const denied = error instanceof DOMException && error.name === "NotAllowedError";
+      setVoiceError(
+        denied
+          ? "Allow microphone access when your browser asks, then try again."
+          : "The microphone could not start. Check your browser permissions.",
+      );
     }
   }
 
   async function send() {
     const text = input.trim();
-    if (!text || busy) return;
+    if (!text || busy || recording || transcribing) return;
 
     const day = currentDay();
     const currentUsage = usage.day === day ? usage : emptyUsage();
@@ -294,8 +639,8 @@ export default function Home() {
   }
 
   function clearLocal() {
-    stopJipitySpeech();
-    setSpeakingMessage(null);
+    stopAllAudio();
+    stopRecording(true);
     setMessages([]);
     setAudit([]);
     localStorage.removeItem("jipity_messages");
@@ -303,8 +648,8 @@ export default function Home() {
   }
 
   async function lockJipity() {
-    stopJipitySpeech();
-    setSpeakingMessage(null);
+    stopAllAudio();
+    stopRecording(true);
 
     try {
       await fetch("/api/auth/logout", { method: "POST" });
@@ -374,7 +719,7 @@ export default function Home() {
                     disabled={!voiceAvailable}
                     title={
                       voiceAvailable
-                        ? "Read this response aloud using your device voice"
+                        ? "Read this response aloud using Jipity's selected voice"
                         : "Speech playback is not available in this browser"
                     }
                   >
@@ -412,7 +757,10 @@ export default function Home() {
                         />
                       </svg>
                     )}
-                    {speakingMessage === index ? "Stop reading" : "Read aloud"}
+                    {voiceLoading === index
+                      ? "Loading voice…"
+                      : speakingMessage === index
+                        ? "Stop reading" : "Read aloud"}
                   </button>
                 )}
               </div>
@@ -471,10 +819,73 @@ export default function Home() {
               maxLength={COST_GOVERNOR.maxMessageCharacters}
               placeholder="Talk to Jipity…"
             />
-            <button onClick={send} disabled={busy}>
+            <button
+              className={`mic-button${recording ? " recording" : ""}`}
+              onClick={toggleRecording}
+              disabled={
+                busy ||
+                transcribing ||
+                !microphoneAvailable ||
+                (!recording && remainingMicrophone === 0)
+              }
+              aria-label={
+                recording
+                  ? "Stop recording your message"
+                  : "Record a message for Jipity"
+              }
+              title={
+                microphoneAvailable
+                  ? recording
+                    ? "Tap to stop recording"
+                    : "Tap to dictate a message"
+                  : "Microphone recording is unavailable in this browser"
+              }
+            >
+              <svg
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                className="mic-icon"
+                fill="none"
+              >
+                <rect
+                  x="9"
+                  y="3"
+                  width="6"
+                  height="12"
+                  rx="3"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                />
+                <path
+                  d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3m-3 0h6"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <span className="mic-button-label">
+                {recording ? "Stop" : transcribing ? "Wait" : "Talk"}
+              </span>
+            </button>
+            <button onClick={send} disabled={busy || recording || transcribing}>
               {busy ? "Thinking…" : "Send"}
             </button>
           </div>
+
+          {(recording || transcribing) && (
+            <div className="recording-status" role="status">
+              <span className="recording-dot" aria-hidden="true" />
+              {recording
+                ? "Listening… Tap Stop when you are finished."
+                : "Transcribing your message for you to review…"}
+            </div>
+          )}
+
+          {voiceError && (
+            <div className="voice-error" role="alert">
+              {voiceError}
+            </div>
+          )}
 
           <div className="notice">
             Signed server checks protect this session. Conversation stays in
@@ -521,6 +932,41 @@ export default function Home() {
             </div>
 
             <div className="voice-settings">
+              <label className="voice-label" htmlFor="jipity-voice-choice">
+                Jipity&apos;s voice
+              </label>
+              <select
+                id="jipity-voice-choice"
+                className="voice-select"
+                value={selectedVoice}
+                onChange={(event) => chooseVoice(event.target.value)}
+              >
+                {JIPITY_VOICES.map((voice) => (
+                  <option key={voice.value} value={voice.value}>
+                    {voice.label}
+                  </option>
+                ))}
+                <option value="device">Device voice · free</option>
+              </select>
+              <button
+                className="voice-preview"
+                onClick={() =>
+                  readResponse(
+                    "Hi Christy. I'm Jipity. This is how I sound.",
+                    -1,
+                  )
+                }
+                disabled={
+                  !voiceAvailable ||
+                  (selectedVoice !== "device" && remainingVoice === 0)
+                }
+              >
+                {voiceLoading === -1
+                  ? "Loading voice…"
+                  : speakingMessage === -1
+                    ? "Stop preview"
+                    : "Preview voice"}
+              </button>
               <div className="stat-row">
                 <span>Read new replies aloud</span>
                 <button
@@ -532,10 +978,25 @@ export default function Home() {
                   {autoRead ? "On" : "Off"}
                 </button>
               </div>
+              <div className="stat-row voice-quota">
+                <span>Natural voice</span>
+                <strong>
+                  {remainingVoice}/{COST_GOVERNOR.maxVoiceRequestsPerDay}
+                </strong>
+              </div>
+              <div className="stat-row voice-quota">
+                <span>Microphone</span>
+                <strong>
+                  {remainingMicrophone}/
+                  {COST_GOVERNOR.maxTranscriptionRequestsPerDay}
+                </strong>
+              </div>
               <p className="voice-note">
-                {voiceAvailable
-                  ? "Uses your device voice. No extra OpenAI credits."
-                  : "Speech playback is unavailable in this browser."}
+                {!voiceAvailable
+                  ? "Speech playback is unavailable in this browser."
+                  : selectedVoice === "device"
+                    ? "Uses your device voice. No extra OpenAI credits."
+                    : "AI-generated voice, not a human. Natural voice and microphone use your daily session budget."}
               </p>
             </div>
           </section>

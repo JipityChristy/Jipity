@@ -9,9 +9,15 @@ Private OpenAI-powered companion starter for Vercel.
 - GPT-5 nano is the normal, lowest-cost conversation model.
 - The optional Spiritual button uses GPT-4o for one spiritual exercise message.
 - The optional Deep button uses GPT-5.6 Sol with high reasoning for one message.
+- Natural read-aloud voices use GPT-4o mini TTS, with Cedar and Marin listed
+  first, additional voice choices, a replay cache, and an optional free device
+  voice fallback.
+- A tap-to-record microphone uses GPT-4o mini Transcribe and places the result
+  in the message box for review before it is sent.
 - A server-signed cost governor limits conversation history, response tokens,
-  daily requests, daily Spiritual and Deep requests, and estimated daily
-  spending for each authenticated session.
+  daily requests, daily Spiritual and Deep requests, natural-voice requests,
+  microphone requests, and estimated daily spending for each authenticated
+  session.
 - HTTP-only, Secure, SameSite=Strict session and usage cookies cannot be edited
   by browser JavaScript or forged without the server-side signing key.
 - Updated Jipity identity, evidence rules, and privacy protections.
@@ -52,14 +58,23 @@ Normal mode uses minimal reasoning; Deep uses high reasoning. GPT-4o does not
 receive a reasoning-effort parameter.
 
 The daily budget is stored in a tamper-evident, server-signed HTTP-only usage
-cookie, and the chat endpoint verifies it before each model request. Limits
-apply per authenticated session and reset on the Melbourne calendar day. A new
-authorized sign-in starts a new session; concurrent requests can also race.
-These safeguards are not an account-wide hard OpenAI billing limit. Configure a
-separate OpenAI Platform project budget for account-level spend protection.
+cookie, and the chat, speech, and transcription endpoints verify it before
+each model request. Natural voice is limited to 18 requests per day; recordings
+are limited to 20 requests, 60 seconds, and 2 MB each. Previously generated
+audio can be replayed from the current browser without a new model request.
+Transcription reserves $0.003 per request; speech reserves a conservative
+character-based estimate because binary audio responses do not report token
+usage to this application. Both use the same existing $0.50 session budget.
+
+Limits apply per authenticated session and reset on the Melbourne calendar
+day. A new authorized sign-in starts a new session; concurrent requests can
+also race. These safeguards are not an account-wide hard OpenAI billing limit.
+Configure a separate OpenAI Platform project budget for account-level spend
+protection. Jipity clearly discloses that its natural voice is AI-generated.
 
 ## Roadmap after V2.1 works
-1. Add OpenAI Realtime voice.
+1. Add optional full-duplex OpenAI Realtime voice after confirming the extra
+   cost is appropriate.
 2. Replace browser-only memory with encrypted server-side persistent memory and memory review controls.
 3. Add an approval queue and signed audit trail for external actions.
 4. Add narrow scheduled/agent tasks.

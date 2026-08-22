@@ -5,8 +5,13 @@ export const COST_GOVERNOR = {
   maxRequestsPerDay: 30,
   maxSpiritualRequestsPerDay: 6,
   maxDeepRequestsPerDay: 3,
+  maxVoiceRequestsPerDay: 18,
+  maxTranscriptionRequestsPerDay: 20,
   maxMessages: 12,
   maxMessageCharacters: 2400,
+  maxSpeechCharacters: 4096,
+  maxRecordingSeconds: 60,
+  maxAudioBytes: 2_000_000,
   maxInputCharacters: 10000,
   maxEstimatedRequestUsd: 0.1,
 } as const;
