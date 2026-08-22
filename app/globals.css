@@ -251,6 +251,9 @@ textarea:focus-visible {
   border-radius: 17px;
   font-size: 14px;
   line-height: 1.6;
+}
+
+.message-copy {
   white-space: pre-wrap;
 }
 
@@ -265,6 +268,39 @@ textarea:focus-visible {
   align-self: flex-start;
   border-color: rgba(170, 133, 229, 0.23);
   background: linear-gradient(135deg, #25183a, #191326);
+}
+
+.read-aloud-button {
+  display: inline-flex;
+  min-height: 31px;
+  margin-top: 12px;
+  padding: 8px 0 0;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-top: 1px solid rgba(189, 159, 229, 0.19);
+  background: transparent;
+  color: var(--gold-bright);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.read-aloud-button:hover,
+.read-aloud-button.speaking {
+  color: var(--green-soft);
+}
+
+.read-aloud-button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.read-aloud-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
 }
 
 .modebar {
@@ -403,6 +439,42 @@ textarea:focus-visible {
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.voice-settings {
+  margin-top: 18px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(173, 141, 209, 0.14);
+}
+
+.voice-toggle {
+  min-width: 39px;
+  padding: 4px 8px;
+  border: 1px solid rgba(176, 152, 208, 0.38);
+  border-radius: 999px;
+  background: rgba(37, 26, 56, 0.78);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.voice-toggle.active {
+  border-color: rgba(82, 201, 138, 0.67);
+  background: rgba(31, 95, 62, 0.68);
+  color: var(--green-soft);
+}
+
+.voice-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.voice-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
 }
 
 .budget-meter {

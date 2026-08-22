@@ -7,6 +7,11 @@ import {
   MODEL_CONFIG,
   type JipityMode,
 } from "../lib/cost-governor";
+import {
+  speakJipityResponse,
+  speechPlaybackSupported,
+  stopJipitySpeech,
+} from "../lib/jipity-voice";
 
 type Message = { role: "user" | "assistant"; content: string };
 type Audit = { at: string; event: string };
@@ -62,6 +67,9 @@ export default function Home() {
   const [mode, setMode] = useState<JipityMode>("standard");
   const [audit, setAudit] = useState<Audit[]>([]);
   const [usage, setUsage] = useState<DailyUsage>(() => emptyUsage());
+  const [voiceAvailable, setVoiceAvailable] = useState(false);
+  const [autoRead, setAutoRead] = useState(false);
+  const [speakingMessage, setSpeakingMessage] = useState<number | null>(null);
 
   useEffect(() => {
     try {
@@ -107,6 +115,20 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    setVoiceAvailable(speechPlaybackSupported());
+
+    try {
+      setAutoRead(localStorage.getItem("jipity_auto_read") === "true");
+    } catch {
+      // Voice playback still works when browser preference storage is unavailable.
+    }
+
+    return () => {
+      stopJipitySpeech();
+    };
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem("jipity_messages", JSON.stringify(messages.slice(-40)));
   }, [messages]);
 
@@ -135,6 +157,43 @@ export default function Home() {
     0,
     Math.min(100, (remainingBudget / COST_GOVERNOR.dailyBudgetUsd) * 100),
   );
+
+  function readResponse(text: string, messageIndex: number) {
+    if (speakingMessage === messageIndex) {
+      stopJipitySpeech();
+      setSpeakingMessage(null);
+      return;
+    }
+
+    const finished = () => {
+      setSpeakingMessage((current) =>
+        current === messageIndex ? null : current,
+      );
+    };
+    const utterance = speakJipityResponse(text, {
+      onStart: () => setSpeakingMessage(messageIndex),
+      onEnd: finished,
+      onError: finished,
+    });
+
+    if (utterance) setSpeakingMessage(messageIndex);
+  }
+
+  function toggleAutoRead() {
+    const enabled = !autoRead;
+    setAutoRead(enabled);
+
+    try {
+      localStorage.setItem("jipity_auto_read", String(enabled));
+    } catch {
+      // Saving this preference is optional.
+    }
+
+    if (!enabled) {
+      stopJipitySpeech();
+      setSpeakingMessage(null);
+    }
+  }
 
   async function send() {
     const text = input.trim();
@@ -208,6 +267,10 @@ export default function Home() {
         { role: "assistant", content: data.text },
       ]);
 
+      if (autoRead && typeof data.text === "string") {
+        readResponse(data.text, next.length);
+      }
+
       if (data?.governor) {
         setUsage(normalizedUsage(data.governor));
       }
@@ -231,6 +294,8 @@ export default function Home() {
   }
 
   function clearLocal() {
+    stopJipitySpeech();
+    setSpeakingMessage(null);
     setMessages([]);
     setAudit([]);
     localStorage.removeItem("jipity_messages");
@@ -238,6 +303,9 @@ export default function Home() {
   }
 
   async function lockJipity() {
+    stopJipitySpeech();
+    setSpeakingMessage(null);
+
     try {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
@@ -298,7 +366,55 @@ export default function Home() {
             )}
             {messages.map((message, index) => (
               <div key={index} className={`msg ${message.role}`}>
-                {message.content}
+                <div className="message-copy">{message.content}</div>
+                {message.role === "assistant" && (
+                  <button
+                    className={`read-aloud-button${speakingMessage === index ? " speaking" : ""}`}
+                    onClick={() => readResponse(message.content, index)}
+                    disabled={!voiceAvailable}
+                    title={
+                      voiceAvailable
+                        ? "Read this response aloud using your device voice"
+                        : "Speech playback is not available in this browser"
+                    }
+                  >
+                    {speakingMessage === index ? (
+                      <svg
+                        viewBox="0 0 20 20"
+                        aria-hidden="true"
+                        className="read-aloud-icon"
+                      >
+                        <rect
+                          x="5"
+                          y="5"
+                          width="10"
+                          height="10"
+                          rx="2"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    ) : (
+                      <svg
+                        viewBox="0 0 20 20"
+                        aria-hidden="true"
+                        className="read-aloud-icon"
+                        fill="none"
+                      >
+                        <path
+                          d="M3 8h3l4-3v10l-4-3H3z"
+                          fill="currentColor"
+                        />
+                        <path
+                          d="M13 7c1.2 1 1.2 5 0 6m2.7-8c2.1 1.8 2.1 8.2 0 10"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                    )}
+                    {speakingMessage === index ? "Stop reading" : "Read aloud"}
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -402,6 +518,25 @@ export default function Home() {
               <strong>
                 {usage.requests}/{COST_GOVERNOR.maxRequestsPerDay}
               </strong>
+            </div>
+
+            <div className="voice-settings">
+              <div className="stat-row">
+                <span>Read new replies aloud</span>
+                <button
+                  className={`voice-toggle${autoRead ? " active" : ""}`}
+                  onClick={toggleAutoRead}
+                  disabled={!voiceAvailable}
+                  aria-pressed={autoRead}
+                >
+                  {autoRead ? "On" : "Off"}
+                </button>
+              </div>
+              <p className="voice-note">
+                {voiceAvailable
+                  ? "Uses your device voice. No extra OpenAI credits."
+                  : "Speech playback is unavailable in this browser."}
+              </p>
             </div>
           </section>
 
