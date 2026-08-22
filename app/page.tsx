@@ -48,6 +48,11 @@ import {
   TASK_LIMITS,
   type TaskAssessment,
 } from "../lib/jipity-guardrails";
+import {
+  PUBLIC_RESEARCH_LIMITS,
+  screenPublicResearchQuery,
+  type PublicResearchSource,
+} from "../lib/jipity-research";
 
 type Message = { role: "user" | "assistant"; content: string };
 type Audit = VaultAuditEntry;
@@ -59,6 +64,14 @@ type DailyUsage = {
   deepRequests: number;
   voiceRequests: number;
   transcriptionRequests: number;
+  researchRequests: number;
+};
+
+type PendingResearchApproval = {
+  query: string;
+  token: string;
+  expiresAt: string;
+  providers: Array<{ id: string; label: string; disclosure: string }>;
 };
 
 const MODE_LABELS: Record<JipityMode, string> = {
@@ -82,6 +95,7 @@ function emptyUsage(): DailyUsage {
     deepRequests: 0,
     voiceRequests: 0,
     transcriptionRequests: 0,
+    researchRequests: 0,
   };
 }
 
@@ -99,6 +113,7 @@ function normalizedUsage(value: Partial<DailyUsage>): DailyUsage {
     deepRequests: numberOrZero(value.deepRequests),
     voiceRequests: numberOrZero(value.voiceRequests),
     transcriptionRequests: numberOrZero(value.transcriptionRequests),
+    researchRequests: numberOrZero(value.researchRequests),
   };
 }
 
@@ -124,6 +139,16 @@ export default function Home() {
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [research, setResearch] = useState<ResearchRecord[]>([]);
   const [cacheHits, setCacheHits] = useState(0);
+  const [publicResearchDraft, setPublicResearchDraft] = useState("");
+  const [publicResearchSources, setPublicResearchSources] = useState<
+    PublicResearchSource[]
+  >([]);
+  const [researchApproval, setResearchApproval] =
+    useState<PendingResearchApproval | null>(null);
+  const [researchConsent, setResearchConsent] = useState(false);
+  const [researchBusy, setResearchBusy] = useState(false);
+  const [researchError, setResearchError] = useState("");
+  const [researchNotice, setResearchNotice] = useState("");
   const [memoryDraft, setMemoryDraft] = useState("");
   const [memoryShelf, setMemoryShelf] = useState<MemoryShelf>("working");
   const [memoryEvidence, setMemoryEvidence] =
@@ -349,6 +374,10 @@ export default function Home() {
     0,
     COST_GOVERNOR.maxTranscriptionRequestsPerDay - usage.transcriptionRequests,
   );
+  const remainingPublicResearch = Math.max(
+    0,
+    COST_GOVERNOR.maxPublicResearchRequestsPerDay - usage.researchRequests,
+  );
   const remainingBudget = Math.max(
     0,
     COST_GOVERNOR.dailyBudgetUsd - usage.spentUsd,
@@ -427,6 +456,239 @@ export default function Home() {
     setMemoryEvidence(shelf === "review" ? "unverified" : "user-confirmed");
     setMemorySource("");
     if (memoryPanelRef.current) memoryPanelRef.current.open = true;
+  }
+
+  function stageResearchSource(source: PublicResearchSource) {
+    const summary = `${source.title}${source.summary ? ` — ${source.summary}` : ""}`
+      .trim()
+      .slice(0, MEMORY_LIMITS.maxSummaryCharacters);
+    const privacy = screenPrivateText(summary);
+
+    if (!privacy.allowed) {
+      setMemoryError(privacy.reasons.join(" "));
+      void recordSignedActivity(
+        "privacy_blocked",
+        "Public research material blocked from private memory",
+        "blocked",
+      );
+      return;
+    }
+
+    setMemoryDraft(summary);
+    setMemoryShelf("working");
+    setMemoryEvidence("source-backed");
+    setMemorySource(source.url);
+    setMemoryError("");
+    setMemoryNotice(
+      "Review the source and wording yourself; nothing is remembered until you approve it.",
+    );
+    if (memoryPanelRef.current) memoryPanelRef.current.open = true;
+  }
+
+  async function reviewPublicResearch() {
+    if (researchBusy || vaultStatus !== "ready") return;
+    const screened = screenPublicResearchQuery(publicResearchDraft);
+    setResearchApproval(null);
+    setResearchConsent(false);
+    setResearchNotice("");
+
+    if (!screened.allowed) {
+      setResearchError(screened.reasons.join(" "));
+      void recordSignedActivity(
+        "privacy_blocked",
+        "Unsafe public research query blocked before external sharing",
+        "blocked",
+      );
+      return;
+    }
+
+    const cached = findFreshResearch(research, screened.query);
+
+    if (cached?.model === "public-source-research") {
+      setMessages((previous) => [
+        ...previous,
+        { role: "user", content: screened.query },
+        {
+          role: "assistant",
+          content: `${cached.answer}\n\nFresh encrypted research reused · no new search or AI cost.`,
+        },
+      ]);
+      setResearchError("");
+      setResearchNotice(
+        "Fresh encrypted results reused. No provider was contacted and no daily search was spent.",
+      );
+      setCacheHits((previous) => previous + 1);
+      void recordSignedActivity(
+        "research_reused",
+        "Fresh approved public research reused without contacting a provider",
+      );
+      return;
+    }
+
+    setResearchBusy(true);
+    setResearchError("");
+
+    try {
+      const response = await fetch("/api/research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "review", query: screened.query }),
+      });
+
+      if (response.status === 401) {
+        window.location.replace("/login");
+        return;
+      }
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        if (typeof result?.auditReceipt === "string") {
+          appendAudit("Public research review blocked safely", result.auditReceipt);
+        }
+
+        throw new Error(result?.error || "The public query could not be reviewed.");
+      }
+
+      if (
+        typeof result?.query !== "string" ||
+        typeof result?.approvalToken !== "string" ||
+        typeof result?.expiresAt !== "string" ||
+        !Array.isArray(result?.providers)
+      ) {
+        throw new Error("The public research approval could not be verified.");
+      }
+
+      setResearchApproval({
+        query: result.query,
+        token: result.approvalToken,
+        expiresAt: result.expiresAt,
+        providers: result.providers,
+      });
+      appendAudit(
+        "Public research reviewed; awaiting exact user approval",
+        typeof result.auditReceipt === "string" ? result.auditReceipt : undefined,
+      );
+    } catch (error: unknown) {
+      setResearchError(
+        error instanceof Error ? error.message : "Public research review failed.",
+      );
+    } finally {
+      setResearchBusy(false);
+    }
+  }
+
+  async function runApprovedPublicResearch() {
+    const approval = researchApproval;
+    if (!approval || !researchConsent || researchBusy || vaultStatus !== "ready") {
+      return;
+    }
+
+    if (Date.parse(approval.expiresAt) <= Date.now()) {
+      setResearchApproval(null);
+      setResearchConsent(false);
+      setResearchError("That approval expired. Review the exact public query again.");
+      return;
+    }
+
+    setResearchBusy(true);
+    setResearchError("");
+    setResearchNotice("");
+
+    try {
+      const response = await fetch("/api/research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "search",
+          query: approval.query,
+          approvalToken: approval.token,
+          approved: true,
+        }),
+      });
+
+      if (response.status === 401) {
+        window.location.replace("/login");
+        return;
+      }
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        if (typeof result?.auditReceipt === "string") {
+          appendAudit("Public research blocked safely", result.auditReceipt);
+        }
+
+        throw new Error(result?.error || "The approved public search failed.");
+      }
+
+      if (!Array.isArray(result?.sources) || typeof result?.answer !== "string") {
+        throw new Error("The public research results could not be verified.");
+      }
+
+      const sources = result.sources as PublicResearchSource[];
+      const answer = result.answer;
+      const cached =
+        sources.length > 0
+          ? createResearchRecord(
+              approval.query,
+              answer,
+              "public-source-research",
+              new Date(),
+              { approvedPublicResearch: true },
+            )
+          : null;
+
+      setPublicResearchSources(sources);
+      setMessages((previous) => [
+        ...previous,
+        { role: "user", content: approval.query },
+        {
+          role: "assistant",
+          content:
+            sources.length > 0
+              ? answer
+              : "The approved public sources returned no matching results. No AI model was used.",
+        },
+      ]);
+
+      if (cached) {
+        setResearch((previous) =>
+          [
+            ...previous.filter(
+              (record) =>
+                record.normalizedQuery !== cached.normalizedQuery &&
+                Date.parse(record.expiresAt) > Date.now(),
+            ),
+            cached,
+          ].slice(-MEMORY_LIMITS.maxResearchRecords),
+        );
+      }
+
+      if (result?.governor) setUsage(normalizedUsage(result.governor));
+      const unavailable = Array.isArray(result?.providers)
+        ? result.providers.filter(
+            (provider: { status?: string }) => provider.status === "unavailable",
+          ).length
+        : 0;
+      setResearchNotice(
+        sources.length === 0
+          ? "No public-source matches were found. No AI model or paid search was used."
+          : `${sources.length} labeled public sources found at $0.00.${cached ? " Results are encrypted and reusable." : " Results were not retained because of the privacy filter."}${unavailable ? " One free provider was temporarily unavailable." : ""}`,
+      );
+      setResearchApproval(null);
+      setResearchConsent(false);
+      appendAudit(
+        "Approved public-source research completed without an AI model charge",
+        typeof result.auditReceipt === "string" ? result.auditReceipt : undefined,
+      );
+    } catch (error: unknown) {
+      setResearchError(
+        error instanceof Error ? error.message : "Approved public research failed.",
+      );
+    } finally {
+      setResearchBusy(false);
+    }
   }
 
   function chooseMemoryShelf(shelf: MemoryShelf) {
@@ -1231,6 +1493,12 @@ export default function Home() {
     setAudit([]);
     setMemories([]);
     setResearch([]);
+    setPublicResearchSources([]);
+    setPublicResearchDraft("");
+    setResearchApproval(null);
+    setResearchConsent(false);
+    setResearchError("");
+    setResearchNotice("");
     setCacheHits(0);
     setMemoryDraft("");
     setMemorySource("");
@@ -1544,6 +1812,13 @@ export default function Home() {
                 {usage.requests}/{COST_GOVERNOR.maxRequestsPerDay}
               </strong>
             </div>
+            <div className="stat-row">
+              <span>Free research left</span>
+              <strong>
+                {remainingPublicResearch}/
+                {COST_GOVERNOR.maxPublicResearchRequestsPerDay}
+              </strong>
+            </div>
 
             <div className="voice-settings">
               <label className="voice-label" htmlFor="jipity-voice-choice">
@@ -1654,6 +1929,129 @@ export default function Home() {
               Vercel Hobby. Download an encrypted backup if you need to keep
               signed records longer.
             </p>
+          </details>
+
+          <details className="card panel control-panel research-panel">
+            <summary>Free public research</summary>
+            <p className="panel-note">
+              Search Wikipedia and Crossref publication metadata without an AI
+              model, paid search plan, or new account. These are public sources,
+              not a complete web search.
+            </p>
+            <p className="panel-note research-label-guide">
+              PUBLIC REFERENCE means editable public material. PUBLISHED INDEX
+              means publication metadata, not proof or confirmed peer review.
+            </p>
+            <label className="research-label" htmlFor="jipity-research-query">
+              A public, non-sensitive topic
+            </label>
+            <input
+              id="jipity-research-query"
+              className="research-input"
+              type="search"
+              value={publicResearchDraft}
+              onChange={(event) => {
+                setPublicResearchDraft(event.target.value);
+                setResearchApproval(null);
+                setResearchConsent(false);
+                setResearchError("");
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void reviewPublicResearch();
+              }}
+              maxLength={PUBLIC_RESEARCH_LIMITS.maxQueryCharacters}
+              placeholder="School refusal support Victoria…"
+            />
+            <button
+              className="smallbtn research-review-button"
+              onClick={reviewPublicResearch}
+              disabled={
+                researchBusy ||
+                vaultStatus !== "ready" ||
+                !publicResearchDraft.trim() ||
+                remainingPublicResearch === 0
+              }
+            >
+              {researchBusy ? "Checking safely…" : "1. Review public query · free"}
+            </button>
+
+            {researchApproval && (
+              <div className="research-approval">
+                <strong>Your exact approved query</strong>
+                <p className="research-exact-query">{researchApproval.query}</p>
+                <p className="panel-note">
+                  Only this screened text will be shared with:
+                </p>
+                <ul className="research-provider-list">
+                  {researchApproval.providers.map((provider) => (
+                    <li key={provider.id} title={provider.disclosure}>
+                      {provider.label}
+                    </li>
+                  ))}
+                </ul>
+                <label className="research-consent">
+                  <input
+                    type="checkbox"
+                    checked={researchConsent}
+                    onChange={(event) => setResearchConsent(event.target.checked)}
+                  />
+                  <span>
+                    I approve sending only this public query. No AI model or paid
+                    search is used.
+                  </span>
+                </label>
+                <button
+                  className="smallbtn research-run-button"
+                  onClick={runApprovedPublicResearch}
+                  disabled={!researchConsent || researchBusy}
+                >
+                  {researchBusy ? "Searching free sources…" : "2. Approve & search · $0.00"}
+                </button>
+              </div>
+            )}
+
+            {researchError && (
+              <div className="memory-error" role="alert">
+                {researchError}
+              </div>
+            )}
+            {researchNotice && (
+              <div className="memory-notice" role="status">
+                {researchNotice}
+              </div>
+            )}
+
+            {publicResearchSources.length > 0 && (
+              <div className="research-results">
+                {publicResearchSources.map((source) => (
+                  <article key={source.id} className="research-result">
+                    <span className={`research-evidence ${source.provider}`}>
+                      {source.evidenceLabel}
+                    </span>
+                    <a
+                      className="research-source-link"
+                      href={source.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      referrerPolicy="no-referrer"
+                    >
+                      {source.title}
+                    </a>
+                    {source.summary && <p>{source.summary}</p>}
+                    <button
+                      className="research-remember"
+                      onClick={() => stageResearchSource(source)}
+                    >
+                      Review before remembering
+                    </button>
+                  </article>
+                ))}
+                <p className="panel-note research-disclosure">
+                  A source or publication entry is evidence to inspect, not proof
+                  that every claim is true or peer reviewed.
+                </p>
+              </div>
+            )}
           </details>
 
           <details ref={memoryPanelRef} className="card panel control-panel memory-panel">

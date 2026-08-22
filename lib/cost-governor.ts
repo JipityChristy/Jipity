@@ -7,6 +7,7 @@ export const COST_GOVERNOR = {
   maxDeepRequestsPerDay: 3,
   maxVoiceRequestsPerDay: 18,
   maxTranscriptionRequestsPerDay: 20,
+  maxPublicResearchRequestsPerDay: 12,
   maxMessages: 12,
   maxMessageCharacters: 2400,
   maxSpeechCharacters: 4096,

@@ -51,11 +51,28 @@ Private OpenAI-powered companion starter for Vercel.
   from another signed-in browser using the same existing Jipity project key.
 - Rejected over-budget text, speech, and microphone requests receive signed
   activity receipts without contacting a model.
+- Explicitly approved public-source research searches only Wikipedia's public
+  reference API and Crossref's published-research metadata API. Both are free,
+  require no account or API key, and never call an OpenAI model.
+- A two-step review shows the exact screened query and both providers before
+  a short-lived, session-bound signed approval permits one search against the
+  current signed device counter. Private family details, contact information,
+  credentials, identifying records, and pasted URLs are blocked before any
+  provider request.
+- Free public-source research is limited to 12 approved searches per Melbourne
+  day on the same signed device ledger. Each provider is called at most once,
+  without unattended retries; exact fresh results are reused from encrypted
+  device storage without another external request.
+- Results distinguish editable **PUBLIC REFERENCE** material from **PUBLISHED
+  INDEX** metadata. Neither a link nor a publication entry independently proves
+  a claim, and research never becomes approved memory without a separate review.
 - A no-model-cost task safety checker shows available, approval-required, and
   blocked tools. Sending, spending, gambling, unattended loops, and external
-  sharing remain disabled; new providers and public searches require approval.
-- No new provider, paid subscription, external search connector, background
-  task runner, or persistent cloud database is enabled.
+  sharing remain disabled; each public-source query and any new AI provider
+  require explicit approval.
+- No new AI provider, paid subscription, paid search API, background task
+  runner, or persistent cloud database is enabled. Public-source research is
+  intentionally limited to Wikimedia and Crossref; it is not whole-web search.
 
 ## Deploy
 1. Put these files in the `JipityChristy/Jipity` GitHub repository.
@@ -78,6 +95,15 @@ Private sessions expire after 12 hours. The **Lock Jipity** button clears the
 authenticated session but deliberately preserves its separately signed daily
 device spending ledger. The ledger is HTTP-only, Secure, SameSite=Strict,
 expires automatically, and resets on the Melbourne calendar day.
+
+Public-research approvals are separately HKDF-signed, expire after two minutes,
+match the exact reviewed query and authenticated session, and become invalid
+after the signed free-search counter changes. Searches are limited to 12 per
+Melbourne day on the same device ledger. Provider requests contain only the
+approved non-sensitive search text and a generic application user agent; they
+never contain the OpenAI key, access code, browser cookies, family details, or
+private conversation history. Parallel browser requests can still race without
+a separately approved atomic cloud database.
 
 Private-device memory uses a separate HKDF-derived AES-256-GCM key issued only
 to an already authenticated session over a `private, no-store` endpoint. The
@@ -134,9 +160,9 @@ verified**. Jipity clearly discloses that its natural voice is AI-generated.
 2. If separately approved, provision a genuinely free capped encrypted database
    for automatic cross-device memory, an atomic shared daily budget, and an
    append-only durable audit trail. Until then, use encrypted manual backups.
-3. Add a privacy-screened public-web research tool with explicit per-search
-   approval, source labels, freshness limits, and result deduplication.
-4. Confirm that an optional additional provider such as Grok has a usable free
+3. Expand public-source research only if a broader search provider has a
+   verified free tier, privacy review, strict caps, and explicit user approval.
+4. Confirm that an optional additional AI provider such as Grok has a usable free
    credit, acceptable privacy terms, and a verified zero-cost stop before it is
    connected.
 5. Add optional draft-only communication and an approval queue; do not enable

@@ -287,9 +287,10 @@ export function createResearchRecord(
   answer: string,
   model: string,
   now = new Date(),
+  options: { approvedPublicResearch?: boolean } = {},
 ): ResearchRecord | null {
   if (
-    !RESEARCH_INTENT.test(query) ||
+    (!options.approvedPublicResearch && !RESEARCH_INTENT.test(query)) ||
     !screenPrivateText(query).allowed ||
     !screenPrivateText(answer).allowed ||
     query.length > 400 ||

@@ -5,6 +5,7 @@ export const USAGE_COOKIE_NAME = "jipity_usage_secure";
 export const DEVICE_GUARD_COOKIE_NAME = "jipity_daily_device_guard";
 export const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
 export const DEVICE_GUARD_MAX_AGE_SECONDS = 48 * 60 * 60;
+export const RESEARCH_APPROVAL_MAX_AGE_SECONDS = 2 * 60;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -17,6 +18,7 @@ export type DailyUsage = {
   deepRequests: number;
   voiceRequests: number;
   transcriptionRequests: number;
+  researchRequests: number;
 };
 
 type SessionPayload = {
@@ -35,7 +37,15 @@ type DeviceUsagePayload = DailyUsage & {
   did: string;
 };
 
-type SigningPurpose = "session" | "usage" | "audit" | "device";
+type ResearchApprovalPayload = {
+  type: "research_approval";
+  sid: string;
+  query: string;
+  count: number;
+  exp: number;
+};
+
+type SigningPurpose = "session" | "usage" | "audit" | "device" | "research";
 
 export const AUDIT_ACTIONS = [
   "model_response",
@@ -54,6 +64,9 @@ export const AUDIT_ACTIONS = [
   "backup_exported",
   "backup_imported",
   "backup_rejected",
+  "research_reviewed",
+  "research_completed",
+  "research_blocked",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
@@ -171,7 +184,8 @@ async function signToken(
     | SessionPayload
     | UsagePayload
     | DeviceUsagePayload
-    | AuditReceiptPayload,
+    | AuditReceiptPayload
+    | ResearchApprovalPayload,
   purpose: SigningPurpose,
 ): Promise<string> {
   const encodedPayload = bytesToBase64Url(
@@ -383,6 +397,58 @@ export async function readAuditReceipt(
   };
 }
 
+export async function issueResearchApproval(
+  state: AuthenticatedState,
+  query: string,
+): Promise<{ token: string; expiresAt: string }> {
+  const trimmed = query.trim();
+
+  if (trimmed.length < 3 || trimmed.length > 180) {
+    throw new Error("That research query cannot be approved safely.");
+  }
+
+  const exp =
+    Math.floor(Date.now() / 1_000) + RESEARCH_APPROVAL_MAX_AGE_SECONDS;
+  const payload: ResearchApprovalPayload = {
+    type: "research_approval",
+    sid: state.session.sid,
+    query: trimmed,
+    count: state.governor.researchRequests ?? 0,
+    exp,
+  };
+
+  return {
+    token: await signToken(payload, "research"),
+    expiresAt: new Date(exp * 1_000).toISOString(),
+  };
+}
+
+export async function verifyResearchApproval(
+  state: AuthenticatedState,
+  token: unknown,
+  query: string,
+): Promise<boolean> {
+  if (typeof token !== "string" || token.length > 2_500) return false;
+  const payload = await verifyToken(token, "research");
+
+  return Boolean(
+    payload &&
+      payload.type === "research_approval" &&
+      typeof payload.sid === "string" &&
+      constantTimeEqual(payload.sid, state.session.sid) &&
+      typeof payload.query === "string" &&
+      constantTimeEqual(payload.query, query.trim()) &&
+      typeof payload.count === "number" &&
+      Number.isSafeInteger(payload.count) &&
+      payload.count === (state.governor.researchRequests ?? 0) &&
+      typeof payload.exp === "number" &&
+      Number.isSafeInteger(payload.exp) &&
+      payload.exp > Math.floor(Date.now() / 1_000) &&
+      payload.exp <=
+        Math.floor(Date.now() / 1_000) + RESEARCH_APPROVAL_MAX_AGE_SECONDS + 5,
+  );
+}
+
 export function currentMelbourneDay(): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Australia/Melbourne",
@@ -398,6 +464,7 @@ export function emptyServerUsage(): DailyUsage {
     deepRequests: 0,
     voiceRequests: 0,
     transcriptionRequests: 0,
+    researchRequests: 0,
   };
 }
 
@@ -510,6 +577,8 @@ export async function readDeviceGuard(
 
   const payload = await verifyToken(token, "device");
   if (!payload) return null;
+  const researchRequests =
+    payload.researchRequests === undefined ? 0 : payload.researchRequests;
 
   if (
     payload.type !== "device_usage" ||
@@ -526,6 +595,7 @@ export async function readDeviceGuard(
     !validCount(payload.deepRequests) ||
     !validCount(payload.voiceRequests) ||
     !validCount(payload.transcriptionRequests) ||
+    !validCount(researchRequests) ||
     payload.spiritualRequests + payload.deepRequests > payload.requests
   ) {
     return null;
@@ -541,6 +611,7 @@ export async function readDeviceGuard(
           deepRequests: payload.deepRequests,
           voiceRequests: payload.voiceRequests,
           transcriptionRequests: payload.transcriptionRequests,
+          researchRequests,
         }
       : emptyServerUsage();
 
@@ -569,6 +640,7 @@ function combineVerifiedUsage(left: DailyUsage, right: DailyUsage): DailyUsage {
       left.transcriptionRequests,
       right.transcriptionRequests,
     ),
+    researchRequests: Math.max(left.researchRequests, right.researchRequests),
   };
 }
 
@@ -590,6 +662,8 @@ async function readUsage(
     payload.transcriptionRequests === undefined
       ? 0
       : payload.transcriptionRequests;
+  const researchRequests =
+    payload.researchRequests === undefined ? 0 : payload.researchRequests;
 
   if (
     payload.type !== "usage" ||
@@ -605,6 +679,7 @@ async function readUsage(
     !validCount(payload.deepRequests) ||
     !validCount(voiceRequests) ||
     !validCount(transcriptionRequests) ||
+    !validCount(researchRequests) ||
     payload.spiritualRequests + payload.deepRequests > payload.requests
   ) {
     return null;
@@ -620,6 +695,7 @@ async function readUsage(
     deepRequests: payload.deepRequests,
     voiceRequests,
     transcriptionRequests,
+    researchRequests,
   };
 }
 
@@ -715,6 +791,7 @@ export async function setUsageCookie(
     ...state.governor,
     voiceRequests: state.governor.voiceRequests ?? 0,
     transcriptionRequests: state.governor.transcriptionRequests ?? 0,
+    researchRequests: state.governor.researchRequests ?? 0,
   };
 
   response.cookies.set(

@@ -41,7 +41,8 @@ export const GUARDED_TOOLS: GuardedTool[] = [
     id: "web_search",
     label: "Search the public web",
     access: "approval-required",
-    reason: "Not connected. A specific search and privacy-safe query need approval.",
+    reason:
+      "A specific privacy-screened search needs your approval; free sources are Wikipedia and Crossref only.",
   },
   {
     id: "email_draft",
@@ -122,7 +123,8 @@ const APPROVAL_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   },
   {
     pattern: /\b(?:search the web|browse|google|look online|search online|external research)\b/i,
-    reason: "Public web search is not connected and requires a privacy-safe approved query.",
+    reason:
+      "Public-source research needs an exact privacy-safe query and your explicit approval.",
   },
   {
     pattern: /\b(?:grok|groq|gemini|cloudflare|openrouter|another (?:ai|provider))\b/i,
