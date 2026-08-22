@@ -43,7 +43,7 @@ export async function POST(req: Request) {
           message.content.trim().length > 0,
       )
       .map(
-        (message) =>
+        (message: { role: string; content: string }) =>
           `${message.role === "assistant" ? "JIPITY" : "CHRISTY"}: ${message.content.slice(0, COST_GOVERNOR.maxMessageCharacters)}`,
       )
       .join("\n\n")
