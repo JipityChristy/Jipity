@@ -15,6 +15,9 @@ const CLIENT_AUDIT_ACTIONS = new Set<AuditAction>([
   "task_assessed",
   "task_blocked",
   "privacy_blocked",
+  "backup_exported",
+  "backup_imported",
+  "backup_rejected",
 ]);
 
 export async function POST(request: Request) {

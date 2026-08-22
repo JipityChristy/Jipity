@@ -19,6 +19,12 @@ export async function GET(request: Request) {
   const response = NextResponse.json({
     authenticated: true,
     governor: state.governor,
+    safety: {
+      dailyGuard: "signed-device",
+      survivesSignOut: true,
+      providerHardLimit: "not-verified",
+      cloudAudit: "vercel-hobby-one-hour",
+    },
   });
 
   await setUsageCookie(response, request, state);

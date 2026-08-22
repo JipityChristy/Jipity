@@ -2,7 +2,9 @@ const DEFAULT_ACCESS_CODE_HASH = "449662fe53df618fe5f590cab9826e0774007de3605485
 
 export const SESSION_COOKIE_NAME = "jipity_session";
 export const USAGE_COOKIE_NAME = "jipity_usage_secure";
+export const DEVICE_GUARD_COOKIE_NAME = "jipity_daily_device_guard";
 export const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
+export const DEVICE_GUARD_MAX_AGE_SECONDS = 48 * 60 * 60;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -28,7 +30,12 @@ type UsagePayload = DailyUsage & {
   sid: string;
 };
 
-type SigningPurpose = "session" | "usage" | "audit";
+type DeviceUsagePayload = DailyUsage & {
+  type: "device_usage";
+  did: string;
+};
+
+type SigningPurpose = "session" | "usage" | "audit" | "device";
 
 export const AUDIT_ACTIONS = [
   "model_response",
@@ -40,6 +47,13 @@ export const AUDIT_ACTIONS = [
   "task_assessed",
   "task_blocked",
   "privacy_blocked",
+  "budget_blocked",
+  "session_started",
+  "session_locked",
+  "spend_guard_restored",
+  "backup_exported",
+  "backup_imported",
+  "backup_rejected",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
@@ -84,6 +98,7 @@ type CookieResponse = {
 export type AuthenticatedState = {
   session: SessionPayload;
   governor: DailyUsage;
+  deviceId?: string;
 };
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -152,7 +167,11 @@ async function signingKey(purpose: SigningPurpose): Promise<CryptoKey> {
 }
 
 async function signToken(
-  payload: SessionPayload | UsagePayload | AuditReceiptPayload,
+  payload:
+    | SessionPayload
+    | UsagePayload
+    | DeviceUsagePayload
+    | AuditReceiptPayload,
   purpose: SigningPurpose,
 ): Promise<string> {
   const encodedPayload = bytesToBase64Url(
@@ -295,7 +314,33 @@ export async function issueAuditReceipt(
     ...(input.shelf ? { shelf: input.shelf } : {}),
   };
 
-  return signToken(payload, "audit");
+  const receipt = await signToken(payload, "audit");
+
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.JIPITY_AUDIT_LOG_TEST === "true"
+  ) {
+    console.info(
+      JSON.stringify({
+        component: "jipity.security",
+        kind: "signed_activity",
+        receiptId: payload.id,
+        at: payload.at,
+        action: payload.action,
+        outcome: payload.outcome,
+        ...(payload.model ? { model: payload.model } : {}),
+        ...(payload.estimatedCostUsd !== undefined
+          ? { estimatedCostUsd: payload.estimatedCostUsd }
+          : {}),
+        ...(payload.cachedInputTokens !== undefined
+          ? { cachedInputTokens: payload.cachedInputTokens }
+          : {}),
+        ...(payload.shelf ? { shelf: payload.shelf } : {}),
+      }),
+    );
+  }
+
+  return receipt;
 }
 
 export async function readAuditReceipt(
@@ -371,9 +416,20 @@ export async function verifyAccessCode(value: unknown): Promise<boolean> {
   return constantTimeEqual(actualHash, expectedHash.toLowerCase());
 }
 
-export async function createSession(): Promise<AuthenticatedState> {
+export async function createSession(
+  request?: Request,
+): Promise<AuthenticatedState> {
   const random = new Uint8Array(24);
   crypto.getRandomValues(random);
+  const savedDevice = request ? await readDeviceGuard(request) : null;
+
+  if (
+    request &&
+    readRequestCookie(request, DEVICE_GUARD_COOKIE_NAME) &&
+    !savedDevice
+  ) {
+    throw new Error("The signed daily spending record could not be verified.");
+  }
 
   return {
     session: {
@@ -381,7 +437,8 @@ export async function createSession(): Promise<AuthenticatedState> {
       sid: bytesToBase64Url(random),
       exp: Math.floor(Date.now() / 1_000) + SESSION_MAX_AGE_SECONDS,
     },
-    governor: emptyServerUsage(),
+    governor: savedDevice?.governor ?? emptyServerUsage(),
+    ...(savedDevice ? { deviceId: savedDevice.id } : {}),
   };
 }
 
@@ -438,6 +495,81 @@ function validCount(value: unknown): value is number {
     value >= 0 &&
     value <= 100_000
   );
+}
+
+type VerifiedDeviceGuard = {
+  id: string;
+  governor: DailyUsage;
+};
+
+export async function readDeviceGuard(
+  request: Request,
+): Promise<VerifiedDeviceGuard | null> {
+  const token = readRequestCookie(request, DEVICE_GUARD_COOKIE_NAME);
+  if (!token) return null;
+
+  const payload = await verifyToken(token, "device");
+  if (!payload) return null;
+
+  if (
+    payload.type !== "device_usage" ||
+    typeof payload.did !== "string" ||
+    !/^[A-Za-z0-9_-]{20,80}$/.test(payload.did) ||
+    typeof payload.day !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(payload.day) ||
+    typeof payload.spentUsd !== "number" ||
+    !Number.isFinite(payload.spentUsd) ||
+    payload.spentUsd < 0 ||
+    payload.spentUsd > 1_000 ||
+    !validCount(payload.requests) ||
+    !validCount(payload.spiritualRequests) ||
+    !validCount(payload.deepRequests) ||
+    !validCount(payload.voiceRequests) ||
+    !validCount(payload.transcriptionRequests) ||
+    payload.spiritualRequests + payload.deepRequests > payload.requests
+  ) {
+    return null;
+  }
+
+  const governor =
+    payload.day === currentMelbourneDay()
+      ? {
+          day: payload.day,
+          spentUsd: payload.spentUsd,
+          requests: payload.requests,
+          spiritualRequests: payload.spiritualRequests,
+          deepRequests: payload.deepRequests,
+          voiceRequests: payload.voiceRequests,
+          transcriptionRequests: payload.transcriptionRequests,
+        }
+      : emptyServerUsage();
+
+  return { id: payload.did, governor };
+}
+
+function combineVerifiedUsage(left: DailyUsage, right: DailyUsage): DailyUsage {
+  const spiritualRequests = Math.max(
+    left.spiritualRequests,
+    right.spiritualRequests,
+  );
+  const deepRequests = Math.max(left.deepRequests, right.deepRequests);
+
+  return {
+    day: currentMelbourneDay(),
+    spentUsd: Math.max(left.spentUsd, right.spentUsd),
+    requests: Math.max(
+      left.requests,
+      right.requests,
+      spiritualRequests + deepRequests,
+    ),
+    spiritualRequests,
+    deepRequests,
+    voiceRequests: Math.max(left.voiceRequests, right.voiceRequests),
+    transcriptionRequests: Math.max(
+      left.transcriptionRequests,
+      right.transcriptionRequests,
+    ),
+  };
 }
 
 async function readUsage(
@@ -499,8 +631,16 @@ export async function readAuthenticatedState(
 
   const governor = await readUsage(request, session);
   if (!governor) return null;
+  const deviceToken = readRequestCookie(request, DEVICE_GUARD_COOKIE_NAME);
+  const device = deviceToken ? await readDeviceGuard(request) : null;
 
-  return { session, governor };
+  if (deviceToken && !device) return null;
+
+  return {
+    session,
+    governor: device ? combineVerifiedUsage(governor, device.governor) : governor,
+    ...(device ? { deviceId: device.id } : {}),
+  };
 }
 
 function cookieOptions(
@@ -534,13 +674,16 @@ export async function setSessionCookies(
       await signToken(state.session, "session"),
     ),
   );
-  await setUsageCookie(response, request, state);
+  await setUsageCookie(response, request, state, {
+    persistDeviceGuard: false,
+  });
 }
 
 export async function setUsageCookie(
   response: CookieResponse,
   request: Request,
   state: AuthenticatedState,
+  options: { persistDeviceGuard?: boolean } = {},
 ): Promise<void> {
   const payload: UsagePayload = {
     type: "usage",
@@ -553,6 +696,33 @@ export async function setUsageCookie(
       request,
       USAGE_COOKIE_NAME,
       await signToken(payload, "usage"),
+    ),
+  );
+
+  if (options.persistDeviceGuard === false) return;
+
+  const existing = await readDeviceGuard(request);
+
+  if (readRequestCookie(request, DEVICE_GUARD_COOKIE_NAME) && !existing) {
+    throw new Error("The signed daily spending record could not be verified.");
+  }
+
+  const random = new Uint8Array(24);
+  if (!state.deviceId && !existing) crypto.getRandomValues(random);
+  const devicePayload: DeviceUsagePayload = {
+    type: "device_usage",
+    did: state.deviceId || existing?.id || bytesToBase64Url(random),
+    ...state.governor,
+    voiceRequests: state.governor.voiceRequests ?? 0,
+    transcriptionRequests: state.governor.transcriptionRequests ?? 0,
+  };
+
+  response.cookies.set(
+    cookieOptions(
+      request,
+      DEVICE_GUARD_COOKIE_NAME,
+      await signToken(devicePayload, "device"),
+      DEVICE_GUARD_MAX_AGE_SECONDS,
     ),
   );
 }

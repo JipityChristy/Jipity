@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   clearSessionCookies,
+  issueAuditReceipt,
   readAuthenticatedState,
 } from "../../../../lib/jipity-security";
 
@@ -16,7 +17,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const response = NextResponse.json({ ok: true });
+  const auditReceipt = await issueAuditReceipt(state, {
+    action: "session_locked",
+    outcome: "ok",
+  });
+  const response = NextResponse.json({ ok: true, auditReceipt });
   clearSessionCookies(response, request);
 
   return response;

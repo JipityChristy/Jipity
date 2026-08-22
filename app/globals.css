@@ -660,6 +660,50 @@ textarea:focus-visible {
   line-height: 1.7;
 }
 
+.protection-row {
+  display: flex;
+  margin-top: 13px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #e8e0ed;
+  font-size: 10px;
+}
+
+.protection-state {
+  flex: 0 0 auto;
+  color: var(--green-soft);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.protection-state.pending {
+  color: var(--gold-bright);
+}
+
+.hard-limit-row {
+  padding-top: 11px;
+  border-top: 1px solid rgba(163, 137, 199, 0.2);
+}
+
+.billing-link {
+  display: block;
+  margin-top: 11px;
+  padding: 9px 10px;
+  border: 1px solid rgba(232, 193, 115, 0.43);
+  border-radius: 10px;
+  background: rgba(86, 59, 37, 0.24);
+  color: var(--gold-bright);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+}
+
+.retention-note {
+  margin-top: 12px;
+}
+
 .memory-counts {
   display: flex;
   margin: 11px 0;
@@ -846,6 +890,38 @@ textarea:focus-visible {
 
 .cache-note {
   margin-top: 12px;
+}
+
+.backup-controls {
+  display: grid;
+  margin-top: 11px;
+  gap: 7px;
+}
+
+.backup-button {
+  width: 100%;
+  border-color: rgba(122, 205, 149, 0.44);
+  background: rgba(38, 83, 58, 0.25);
+  color: var(--green-soft);
+}
+
+.backup-button.restore-button {
+  border-color: rgba(171, 138, 219, 0.41);
+  background: rgba(76, 49, 99, 0.27);
+  color: #e0ceff;
+}
+
+.backup-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.backup-file-input {
+  display: none;
+}
+
+.backup-note {
+  margin-top: 9px;
 }
 
 .tool-list {

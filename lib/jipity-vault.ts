@@ -8,6 +8,7 @@ import {
 } from "./jipity-memory";
 
 export const ENCRYPTED_VAULT_STORAGE_KEY = "jipity_private_vault_v1";
+export const MAX_ENCRYPTED_BACKUP_BYTES = 2_000_000;
 
 export type VaultMessage = {
   role: "user" | "assistant";
@@ -34,6 +35,14 @@ type EncryptedVault = {
   version: 1;
   iv: string;
   ciphertext: string;
+};
+
+export type EncryptedVaultBackup = {
+  app: "Jipity";
+  version: 1;
+  algorithm: "AES-256-GCM";
+  exportedAt: string;
+  encryptedVault: string;
 };
 
 const encoder = new TextEncoder();
@@ -191,4 +200,69 @@ export async function decryptPrivateVault(
   );
 
   return normalizePrivateVault(JSON.parse(decoder.decode(decrypted)));
+}
+
+export function createEncryptedVaultBackup(
+  encryptedVault: string,
+  exportedAt = new Date(),
+): string {
+  if (
+    typeof encryptedVault !== "string" ||
+    encryptedVault.length === 0 ||
+    encoder.encode(encryptedVault).length > MAX_ENCRYPTED_BACKUP_BYTES
+  ) {
+    throw new Error("The encrypted private memory cannot be backed up.");
+  }
+
+  const envelope: EncryptedVaultBackup = {
+    app: "Jipity",
+    version: 1,
+    algorithm: "AES-256-GCM",
+    exportedAt: exportedAt.toISOString(),
+    encryptedVault,
+  };
+  const backup = JSON.stringify(envelope, null, 2);
+
+  if (encoder.encode(backup).length > MAX_ENCRYPTED_BACKUP_BYTES) {
+    throw new Error("The encrypted private backup exceeds the safety limit.");
+  }
+
+  return backup;
+}
+
+export async function readEncryptedVaultBackup(
+  value: string,
+  key: CryptoKey,
+): Promise<{ encryptedVault: string; vault: PrivateVault }> {
+  if (
+    typeof value !== "string" ||
+    encoder.encode(value).length > MAX_ENCRYPTED_BACKUP_BYTES
+  ) {
+    throw new Error("Choose a valid Jipity encrypted backup under two megabytes.");
+  }
+
+  const parsed: unknown = JSON.parse(value);
+
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("app" in parsed) ||
+    parsed.app !== "Jipity" ||
+    !("version" in parsed) ||
+    parsed.version !== 1 ||
+    !("algorithm" in parsed) ||
+    parsed.algorithm !== "AES-256-GCM" ||
+    !("exportedAt" in parsed) ||
+    typeof parsed.exportedAt !== "string" ||
+    Number.isNaN(Date.parse(parsed.exportedAt)) ||
+    !("encryptedVault" in parsed) ||
+    typeof parsed.encryptedVault !== "string"
+  ) {
+    throw new Error("That file is not a valid encrypted Jipity backup.");
+  }
+
+  return {
+    encryptedVault: parsed.encryptedVault,
+    vault: await decryptPrivateVault(parsed.encryptedVault, key),
+  };
 }

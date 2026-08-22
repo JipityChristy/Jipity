@@ -17,7 +17,7 @@ Private OpenAI-powered companion starter for Vercel.
 - A server-signed cost governor limits conversation history, response tokens,
   daily requests, daily Spiritual and Deep requests, natural-voice requests,
   microphone requests, and estimated daily spending for each authenticated
-  session.
+  browser, including after the user locks Jipity and signs back in.
 - HTTP-only, Secure, SameSite=Strict session and usage cookies cannot be edited
   by browser JavaScript or forged without the server-side signing key.
 - Updated Jipity identity, evidence rules, and privacy protections.
@@ -37,6 +37,20 @@ Private OpenAI-powered companion starter for Vercel.
   prefixes easier to reuse; cached input tokens appear in signed activity.
 - Separately signed activity receipts identify altered or forged records. Since
   storage is device-only, deleting a receipt cannot be detected.
+- A separate signed, HTTP-only daily device ledger survives **Lock Jipity** and
+  later sign-ins, so signing out no longer resets this browser's daily spending
+  or mode counters. Another browser or cleared cookies remains a separate
+  ledger; only an explicitly enforced OpenAI project hard limit protects the
+  project across devices.
+- Production security activity is copied into privacy-safe Vercel runtime logs
+  without prompts, private messages, API keys, family details, or session
+  identifiers. Vercel Hobby retains these server-side logs for only one hour.
+- User-initiated encrypted backup download and restore preserve approved
+  memory, safe research, and signed activity without a database or cloud
+  subscription. Backups contain AES-GCM ciphertext only and can be restored
+  from another signed-in browser using the same existing Jipity project key.
+- Rejected over-budget text, speech, and microphone requests receive signed
+  activity receipts without contacting a model.
 - A no-model-cost task safety checker shows available, approval-required, and
   blocked tools. Sending, spending, gambling, unattended loops, and external
   sharing remain disabled; new providers and public searches require approval.
@@ -61,7 +75,9 @@ Session and spending-ledger signatures are derived server-side from the existing
 `OPENAI_API_KEY` with separate HKDF purposes. The API key is never written to
 the repository, sent to the browser, replaced, or exposed in session cookies.
 Private sessions expire after 12 hours. The **Lock Jipity** button clears the
-authenticated session.
+authenticated session but deliberately preserves its separately signed daily
+device spending ledger. The ledger is HTTP-only, Secure, SameSite=Strict,
+expires automatically, and resets on the Melbourne calendar day.
 
 Private-device memory uses a separate HKDF-derived AES-256-GCM key issued only
 to an already authenticated session over a `private, no-store` endpoint. The
@@ -69,7 +85,8 @@ OpenAI root key itself never leaves the server, and the browser retains its
 imported encryption key only in working memory. Browser storage contains
 authenticated ciphertext, not plaintext messages, memory summaries, research,
 or activity records. Clearing browser data removes this device-only vault;
-there is currently no cross-device backup or durable cloud audit ledger.
+encrypted manual backups can transfer it to another signed-in browser, but
+there is currently no automatic cross-device sync or durable cloud audit ledger.
 
 Only relevant, explicitly approved, non-sensitive memories are included in a
 chat request. Review material is never injected as established fact. A source
@@ -94,24 +111,36 @@ are limited to 20 requests, 60 seconds, and 2 MB each. Previously generated
 audio can be replayed from the current browser without a new model request.
 Transcription reserves $0.003 per request; speech reserves a conservative
 character-based estimate because binary audio responses do not report token
-usage to this application. Both use the same existing $0.50 session budget.
+usage to this application. Both use the same existing $0.50 daily device budget.
 
-Limits apply per authenticated session and reset on the Melbourne calendar
-day. A new authorized sign-in starts a new session; concurrent requests can
-also race. These safeguards are not an account-wide hard OpenAI billing limit.
-Configure a separate OpenAI Platform project budget for account-level spend
-protection. Jipity clearly discloses that its natural voice is AI-generated.
+Limits apply to the signed device ledger and reset on the Melbourne calendar
+day. Locking and signing back in restores the same device's verified totals.
+Using another browser or clearing its cookies starts a separate device ledger;
+concurrent requests can also race. These safeguards are not an account-wide
+hard OpenAI billing limit.
+
+For a provider-enforced cap, open the Jipity OpenAI project, select **Limits**
+→ **Edit spend limit**, enter the chosen monthly amount, and explicitly enable
+**Enforce a hard limit**. A $15 monthly ceiling approximately matches a $0.50
+daily allowance over 30 days. Alerts alone do not stop API traffic, and even a
+provider hard limit can slightly overshoot while enforcement propagates. Jipity
+cannot inspect or modify this account setting without a separate administrator
+credential, so its interface accurately labels the provider cap **Not
+verified**. Jipity clearly discloses that its natural voice is AI-generated.
 
 ## Next safety-first roadmap
-1. Confirm that an optional additional provider such as Grok has a usable free
-   credit, acceptable privacy terms, and a verified zero-cost stop before any
-   provider is connected.
+1. Confirm the OpenAI project has **Enforce a hard limit** enabled for a
+   user-approved monthly amount; the application cannot verify this setting.
 2. If separately approved, provision a genuinely free capped encrypted database
-   for cross-device memory and an append-only durable audit trail.
+   for automatic cross-device memory, an atomic shared daily budget, and an
+   append-only durable audit trail. Until then, use encrypted manual backups.
 3. Add a privacy-screened public-web research tool with explicit per-search
    approval, source labels, freshness limits, and result deduplication.
-4. Add optional draft-only communication and an approval queue; do not enable
+4. Confirm that an optional additional provider such as Grok has a usable free
+   credit, acceptable privacy terms, and a verified zero-cost stop before it is
+   connected.
+5. Add optional draft-only communication and an approval queue; do not enable
    sending, publishing, spending, or impersonation.
-5. Only after those barriers pass tests, add narrow user-approved tasks with
+6. Only after those barriers pass tests, add narrow user-approved tasks with
    visible budgets, finite time limits, no unattended retries, and no
    guaranteed-income claims.

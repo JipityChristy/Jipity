@@ -34,10 +34,13 @@ import {
 } from "../lib/jipity-memory";
 import {
   ENCRYPTED_VAULT_STORAGE_KEY,
+  MAX_ENCRYPTED_BACKUP_BYTES,
+  createEncryptedVaultBackup,
   decryptPrivateVault,
   encryptPrivateVault,
   importPrivateVaultKey,
   normalizePrivateVault,
+  readEncryptedVaultBackup,
   type VaultAuditEntry,
 } from "../lib/jipity-vault";
 import {
@@ -134,6 +137,8 @@ export default function Home() {
   );
   const [taskBusy, setTaskBusy] = useState(false);
   const [auditVerification, setAuditVerification] = useState("");
+  const [deviceGuardActive, setDeviceGuardActive] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const audioCacheRef = useRef<Map<string, string>>(new Map());
   const audioAbortRef = useRef<AbortController | null>(null);
@@ -144,6 +149,7 @@ export default function Home() {
   const vaultKeyRef = useRef<CryptoKey | null>(null);
   const vaultWriteRef = useRef<Promise<void>>(Promise.resolve());
   const memoryPanelRef = useRef<HTMLDetailsElement | null>(null);
+  const backupInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     try {
@@ -177,6 +183,7 @@ export default function Home() {
 
         if (!cancelled && result?.governor) {
           setUsage(normalizedUsage(result.governor));
+          setDeviceGuardActive(result?.safety?.dailyGuard === "signed-device");
         }
       })
       .catch(() => {
@@ -350,6 +357,7 @@ export default function Home() {
     0,
     Math.min(100, (remainingBudget / COST_GOVERNOR.dailyBudgetUsd) * 100),
   );
+  const suggestedMonthlyCap = COST_GOVERNOR.dailyBudgetUsd * 30;
 
   function appendAudit(event: string, receipt?: string) {
     setAudit((previous) =>
@@ -369,7 +377,10 @@ export default function Home() {
       | "memory_saved"
       | "memory_deleted"
       | "research_reused"
-      | "privacy_blocked",
+      | "privacy_blocked"
+      | "backup_exported"
+      | "backup_imported"
+      | "backup_rejected",
     event: string,
     outcome: "ok" | "blocked" | "approval-required" = "ok",
     shelf?: MemoryShelf,
@@ -599,6 +610,127 @@ export default function Home() {
     }
   }
 
+  async function downloadEncryptedBackup() {
+    const key = vaultKeyRef.current;
+
+    if (!key || vaultStatus !== "ready") {
+      setMemoryError("Open encrypted private memory before creating a backup.");
+      return;
+    }
+
+    setBackupBusy(true);
+
+    try {
+      await vaultWriteRef.current;
+      const snapshot = normalizePrivateVault({
+        version: 1,
+        messages,
+        audit,
+        memories,
+        research,
+        cacheHits,
+      });
+      const encrypted = await encryptPrivateVault(snapshot, key);
+      const backup = createEncryptedVaultBackup(encrypted);
+      const objectUrl = URL.createObjectURL(
+        new Blob([backup], { type: "application/json" }),
+      );
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `jipity-private-backup-${currentDay()}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      setMemoryError("");
+      setMemoryNotice(
+        "Encrypted backup downloaded. Keep the file safe; it contains no readable conversation or memory.",
+      );
+      await recordSignedActivity(
+        "backup_exported",
+        "Encrypted private memory and signed audit backup exported by the user",
+      );
+    } catch {
+      setMemoryError("The encrypted private backup could not be created.");
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function restoreEncryptedBackup(file: File) {
+    const key = vaultKeyRef.current;
+
+    if (!key || vaultStatus !== "ready") {
+      setMemoryError("Open encrypted private memory before restoring a backup.");
+      return;
+    }
+
+    setBackupBusy(true);
+
+    try {
+      if (file.size === 0 || file.size > MAX_ENCRYPTED_BACKUP_BYTES) {
+        throw new Error("Choose an encrypted Jipity backup under two megabytes.");
+      }
+
+      const restored = await readEncryptedVaultBackup(await file.text(), key);
+      const receipts = restored.vault.audit
+        .map((entry) => entry.receipt)
+        .filter((receipt): receipt is string => typeof receipt === "string")
+        .slice(-100);
+
+      if (receipts.length > 0) {
+        const response = await fetch("/api/safety/audit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ receipts }),
+        });
+
+        if (response.status === 401) {
+          window.location.replace("/login");
+          return;
+        }
+
+        const verification = await response.json();
+
+        if (!response.ok || !verification?.valid) {
+          throw new Error("The backup contains invalid signed activity records.");
+        }
+      }
+
+      await vaultWriteRef.current;
+      localStorage.setItem(
+        ENCRYPTED_VAULT_STORAGE_KEY,
+        restored.encryptedVault,
+      );
+      setMessages(restored.vault.messages);
+      setAudit(restored.vault.audit);
+      setMemories(restored.vault.memories);
+      setResearch(restored.vault.research);
+      setCacheHits(restored.vault.cacheHits);
+      setMemoryError("");
+      setMemoryNotice(
+        "Encrypted private memory restored. Signed activity and safety filters were checked first.",
+      );
+      await recordSignedActivity(
+        "backup_imported",
+        "Encrypted private memory backup restored after integrity verification",
+      );
+    } catch (error: unknown) {
+      setMemoryError(
+        error instanceof Error
+          ? error.message
+          : "The encrypted backup failed its security checks.",
+      );
+      await recordSignedActivity(
+        "backup_rejected",
+        "Encrypted private backup rejected by integrity or signature checks",
+        "blocked",
+      );
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
   function stopAllAudio() {
     audioAbortRef.current?.abort();
     audioAbortRef.current = null;
@@ -662,6 +794,14 @@ export default function Home() {
 
         if (!response.ok) {
           const result = await response.json();
+
+          if (typeof result?.auditReceipt === "string") {
+            appendAudit(
+              "Natural voice request blocked by the signed daily spending guard",
+              result.auditReceipt,
+            );
+          }
+
           throw new Error(result?.error || "Jipity could not create that voice.");
         }
 
@@ -814,6 +954,13 @@ export default function Home() {
       const result = await response.json();
 
       if (!response.ok) {
+        if (typeof result?.auditReceipt === "string") {
+          appendAudit(
+            "Microphone request blocked by the signed daily spending guard",
+            result.auditReceipt,
+          );
+        }
+
         throw new Error(result?.error || "Jipity could not hear that message.");
       }
 
@@ -1013,7 +1160,17 @@ export default function Home() {
       }
 
       const data = await response.json();
-      if (!response.ok) throw new Error(data?.error || "Request failed");
+
+      if (!response.ok) {
+        if (typeof data?.auditReceipt === "string") {
+          appendAudit(
+            "Message request blocked by the signed daily spending guard",
+            data.auditReceipt,
+          );
+        }
+
+        throw new Error(data?.error || "Request failed");
+      }
 
       const estimatedCostUsd = Number(data?.usage?.estimatedCostUsd) || 0;
 
@@ -1360,7 +1517,7 @@ export default function Home() {
 
             <div className="stat-block">
               <div className="stat-row">
-                <span>Daily session budget</span>
+                <span>Daily device budget</span>
                 <strong>${remainingBudget.toFixed(2)} left</strong>
               </div>
               <div className="budget-meter" aria-hidden="true">
@@ -1453,10 +1610,51 @@ export default function Home() {
                   ? "Speech playback is unavailable in this browser."
                   : selectedVoice === "device"
                     ? "Uses your device voice. No extra OpenAI credits."
-                    : "AI-generated voice, not a human. Natural voice and microphone use your daily session budget."}
+                    : "AI-generated voice, not a human. Natural voice and microphone use your daily device budget."}
               </p>
             </div>
           </section>
+
+          <details className="card panel control-panel billing-panel">
+            <summary>Spending protection</summary>
+            <div className="protection-row">
+              <span>Daily device guard</span>
+              <span
+                className={`protection-state${deviceGuardActive ? " active" : " pending"}`}
+              >
+                {deviceGuardActive ? "Signed & active" : "Checking…"}
+              </span>
+            </div>
+            <p className="panel-note">
+              This browser keeps its signed ${COST_GOVERNOR.dailyBudgetUsd.toFixed(2)}
+              daily limit after Lock and sign-in. It resets on the Melbourne
+              calendar day. Clearing cookies or using another browser is not an
+              account-wide barrier.
+            </p>
+            <div className="protection-row hard-limit-row">
+              <span>OpenAI project hard limit</span>
+              <span className="protection-state pending">Not verified</span>
+            </div>
+            <p className="panel-note">
+              Suggested monthly ceiling: ${suggestedMonthlyCap.toFixed(2)}. Open
+              the Jipity project, choose Limits → Edit spend limit, and turn on
+              <strong> Enforce a hard limit</strong>. An alert without that switch
+              will not stop API charges.
+            </p>
+            <a
+              className="billing-link"
+              href="https://platform.openai.com/settings/organization/projects"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Open OpenAI project settings
+            </a>
+            <p className="panel-note retention-note">
+              Privacy-safe server activity logs are retained for one hour on
+              Vercel Hobby. Download an encrypted backup if you need to keep
+              signed records longer.
+            </p>
+          </details>
 
           <details ref={memoryPanelRef} className="card panel control-panel memory-panel">
             <summary>Private memory &amp; evidence</summary>
@@ -1608,6 +1806,38 @@ export default function Home() {
               {research.length} safe research answers cached. Time-sensitive
               material expires after one hour; other research expires after seven
               days.
+            </p>
+            <div className="backup-controls">
+              <button
+                className="smallbtn backup-button"
+                onClick={downloadEncryptedBackup}
+                disabled={backupBusy || vaultStatus !== "ready"}
+              >
+                {backupBusy ? "Checking backup…" : "Download encrypted backup"}
+              </button>
+              <button
+                className="smallbtn backup-button restore-button"
+                onClick={() => backupInputRef.current?.click()}
+                disabled={backupBusy || vaultStatus !== "ready"}
+              >
+                Restore encrypted backup
+              </button>
+              <input
+                ref={backupInputRef}
+                className="backup-file-input"
+                type="file"
+                accept="application/json,.json"
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  event.currentTarget.value = "";
+                  if (file) void restoreEncryptedBackup(file);
+                }}
+              />
+            </div>
+            <p className="panel-note backup-note">
+              Backups contain encrypted data only and can restore Jipity on
+              another signed-in device. Restoring replaces this device&apos;s
+              current saved memory.
             </p>
           </details>
 

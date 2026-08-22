@@ -135,8 +135,17 @@ export async function POST(req: Request) {
       maximumEstimatedCostUsd > COST_GOVERNOR.maxEstimatedRequestUsd ||
       spentUsd + maximumEstimatedCostUsd > COST_GOVERNOR.dailyBudgetUsd
     ) {
+      const auditReceipt = await issueAuditReceipt(state, {
+        action: "budget_blocked",
+        outcome: "blocked",
+        model: config.model,
+        estimatedCostUsd: Math.min(maximumEstimatedCostUsd, 1),
+      });
       return NextResponse.json(
-        { error: "The Jipity cost governor has reached its daily safety limit." },
+        {
+          error: "The Jipity cost governor has reached its daily safety limit.",
+          auditReceipt,
+        },
         { status: 429 },
       );
     }

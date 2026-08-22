@@ -83,8 +83,17 @@ export async function POST(request: Request) {
       state.governor.spentUsd + estimatedCostUsd >
         COST_GOVERNOR.dailyBudgetUsd
     ) {
+      const auditReceipt = await issueAuditReceipt(state, {
+        action: "budget_blocked",
+        outcome: "blocked",
+        model: JIPITY_TRANSCRIPTION_MODEL,
+        estimatedCostUsd,
+      });
       return NextResponse.json(
-        { error: "The daily microphone or session spending limit has been reached." },
+        {
+          error: "The daily microphone or session spending limit has been reached.",
+          auditReceipt,
+        },
         { status: 429 },
       );
     }
