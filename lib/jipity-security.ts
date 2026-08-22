@@ -303,15 +303,18 @@ export async function readAuditReceipt(
 ): Promise<AuditReceiptPayload | null> {
   const payload = await verifyToken(token, "audit");
   if (!payload) return null;
+  const sessionId = payload.sid;
+  const receiptId = payload.id;
+  const recordedAt = payload.at;
 
   if (
     payload.type !== "audit" ||
-    typeof payload.sid !== "string" ||
-    !/^[A-Za-z0-9_-]{20,80}$/.test(payload.sid) ||
-    typeof payload.id !== "string" ||
-    !/^[A-Za-z0-9-]{20,80}$/.test(payload.id) ||
-    typeof payload.at !== "string" ||
-    Number.isNaN(Date.parse(payload.at)) ||
+    typeof sessionId !== "string" ||
+    !/^[A-Za-z0-9_-]{20,80}$/.test(sessionId) ||
+    typeof receiptId !== "string" ||
+    !/^[A-Za-z0-9-]{20,80}$/.test(receiptId) ||
+    typeof recordedAt !== "string" ||
+    Number.isNaN(Date.parse(recordedAt)) ||
     !validAuditInput(payload)
   ) {
     return null;
@@ -319,9 +322,9 @@ export async function readAuditReceipt(
 
   return {
     type: "audit",
-    sid: payload.sid,
-    id: payload.id,
-    at: payload.at,
+    sid: sessionId,
+    id: receiptId,
+    at: recordedAt,
     action: payload.action,
     outcome: payload.outcome,
     ...(payload.model ? { model: payload.model } : {}),
