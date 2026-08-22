@@ -13,7 +13,14 @@ type DailyUsage = {
   day: string;
   spentUsd: number;
   requests: number;
+  spiritualRequests: number;
   deepRequests: number;
+};
+
+const MODE_LABELS: Record<JipityMode, string> = {
+  standard: "GPT-5 nano · economy",
+  spiritual: "GPT-4o · spiritual exercise · next message only",
+  deep: "GPT-5.6 Sol · deep reasoning · next message only",
 };
 
 function currentDay(): string {
@@ -23,14 +30,35 @@ function currentDay(): string {
 }
 
 function emptyUsage(): DailyUsage {
-  return { day: currentDay(), spentUsd: 0, requests: 0, deepRequests: 0 };
+  return {
+    day: currentDay(),
+    spentUsd: 0,
+    requests: 0,
+    spiritualRequests: 0,
+    deepRequests: 0,
+  };
+}
+
+function normalizedUsage(value: Partial<DailyUsage>): DailyUsage {
+  const numberOrZero = (number: unknown) => {
+    const parsed = Number(number);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  };
+
+  return {
+    day: typeof value.day === "string" ? value.day : currentDay(),
+    spentUsd: numberOrZero(value.spentUsd),
+    requests: numberOrZero(value.requests),
+    spiritualRequests: numberOrZero(value.spiritualRequests),
+    deepRequests: numberOrZero(value.deepRequests),
+  };
 }
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [deep, setDeep] = useState(false);
+  const [mode, setMode] = useState<JipityMode>("standard");
   const [audit, setAudit] = useState<Audit[]>([]);
   const [usage, setUsage] = useState<DailyUsage>(() => emptyUsage());
 
@@ -43,7 +71,7 @@ export default function Home() {
       if (savedMessages) setMessages(JSON.parse(savedMessages));
       if (savedAudit) setAudit(JSON.parse(savedAudit));
       if (savedUsage) {
-        const parsed = JSON.parse(savedUsage) as DailyUsage;
+        const parsed = normalizedUsage(JSON.parse(savedUsage));
         if (parsed.day === currentDay()) setUsage(parsed);
       }
     } catch {
@@ -64,6 +92,10 @@ export default function Home() {
   }, [usage]);
 
   const status = useMemo(() => (busy ? "thinking" : "ready"), [busy]);
+  const remainingSpiritual = Math.max(
+    0,
+    COST_GOVERNOR.maxSpiritualRequestsPerDay - usage.spiritualRequests,
+  );
   const remainingDeep = Math.max(
     0,
     COST_GOVERNOR.maxDeepRequestsPerDay - usage.deepRequests,
@@ -79,11 +111,13 @@ export default function Home() {
 
     const day = currentDay();
     const currentUsage = usage.day === day ? usage : emptyUsage();
-    const mode: JipityMode = deep ? "deep" : "standard";
 
     if (
       currentUsage.requests >= COST_GOVERNOR.maxRequestsPerDay ||
       currentUsage.spentUsd >= COST_GOVERNOR.dailyBudgetUsd ||
+      (mode === "spiritual" &&
+        currentUsage.spiritualRequests >=
+          COST_GOVERNOR.maxSpiritualRequestsPerDay) ||
       (mode === "deep" &&
         currentUsage.deepRequests >= COST_GOVERNOR.maxDeepRequestsPerDay)
     ) {
@@ -108,7 +142,7 @@ export default function Home() {
 
     setMessages(next);
     setInput("");
-    setDeep(false);
+    setMode("standard");
     setBusy(true);
     setAudit((previous) => [
       ...previous,
@@ -144,6 +178,8 @@ export default function Home() {
           day,
           spentUsd: Number((baseline.spentUsd + estimatedCostUsd).toFixed(6)),
           requests: baseline.requests + 1,
+          spiritualRequests:
+            baseline.spiritualRequests + (mode === "spiritual" ? 1 : 0),
           deepRequests: baseline.deepRequests + (mode === "deep" ? 1 : 0),
         };
       });
@@ -199,17 +235,32 @@ export default function Home() {
 
         <div className="modebar">
           <button
-            className={`deepbtn${deep ? " active" : ""}`}
-            onClick={() => setDeep((enabled) => !enabled)}
+            className={`modebtn spiritual${mode === "spiritual" ? " active" : ""}`}
+            onClick={() =>
+              setMode((selected) =>
+                selected === "spiritual" ? "standard" : "spiritual",
+              )
+            }
+            disabled={busy || remainingSpiritual === 0}
+            aria-pressed={mode === "spiritual"}
+            title="Use GPT-4o for a spiritual exercise on the next message only"
+          >
+            Spiritual
+          </button>
+          <button
+            className={`modebtn deep${mode === "deep" ? " active" : ""}`}
+            onClick={() =>
+              setMode((selected) =>
+                selected === "deep" ? "standard" : "deep",
+              )
+            }
             disabled={busy || remainingDeep === 0}
-            aria-pressed={deep}
+            aria-pressed={mode === "deep"}
             title="Use GPT-5.6 Sol with high reasoning for the next message only"
           >
             Deep
           </button>
-          <span className="modehint">
-            {deep ? "GPT-5.6 Sol · next message only" : "GPT-5 nano · economy"}
-          </span>
+          <span className="modehint">{MODE_LABELS[mode]}</span>
         </div>
 
         <div className="composer">
@@ -231,8 +282,9 @@ export default function Home() {
         </div>
 
         <div className="notice">
-          Daily safety budget: ${remainingBudget.toFixed(2)} remaining · Deep:
-          {" "}
+          Daily safety budget: ${remainingBudget.toFixed(2)} remaining ·
+          Spiritual: {remainingSpiritual}/
+          {COST_GOVERNOR.maxSpiritualRequestsPerDay} left · Deep: {" "}
           {remainingDeep}/{COST_GOVERNOR.maxDeepRequestsPerDay} left · Chat stays
           in this browser.
         </div>

@@ -25,7 +25,10 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const mode: JipityMode = body?.mode === "deep" ? "deep" : "standard";
+    const mode: JipityMode =
+      body?.mode === "deep" || body?.mode === "spiritual"
+        ? body.mode
+        : "standard";
     const config = MODEL_CONFIG[mode];
     const messages = Array.isArray(body?.messages)
       ? body.messages.slice(-COST_GOVERNOR.maxMessages)
@@ -59,6 +62,9 @@ export async function POST(req: Request) {
     const reportedUsage = body?.governor ?? {};
     const spentUsd = nonNegativeNumber(reportedUsage.spentUsd);
     const requests = nonNegativeNumber(reportedUsage.requests);
+    const spiritualRequests = nonNegativeNumber(
+      reportedUsage.spiritualRequests,
+    );
     const deepRequests = nonNegativeNumber(reportedUsage.deepRequests);
     const estimatedInputTokens = Math.ceil(
       (JIPITY_INSTRUCTIONS.length + input.length) / 2,
@@ -71,6 +77,8 @@ export async function POST(req: Request) {
 
     if (
       requests >= COST_GOVERNOR.maxRequestsPerDay ||
+      (mode === "spiritual" &&
+        spiritualRequests >= COST_GOVERNOR.maxSpiritualRequestsPerDay) ||
       (mode === "deep" &&
         deepRequests >= COST_GOVERNOR.maxDeepRequestsPerDay) ||
       maximumEstimatedCostUsd > COST_GOVERNOR.maxEstimatedRequestUsd ||
@@ -83,14 +91,18 @@ export async function POST(req: Request) {
     }
 
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const reasoning =
+      mode === "deep"
+        ? { effort: "high" as const }
+        : mode === "standard"
+          ? { effort: "minimal" as const }
+          : undefined;
     const response = await client.responses.create({
       model: config.model,
       instructions: JIPITY_INSTRUCTIONS,
       input,
       max_output_tokens: config.maxOutputTokens,
-      reasoning: {
-        effort: mode === "deep" ? ("high" as const) : ("minimal" as const),
-      },
+      ...(reasoning ? { reasoning } : {}),
     });
 
     const inputTokens = response.usage?.input_tokens ?? estimatedInputTokens;
