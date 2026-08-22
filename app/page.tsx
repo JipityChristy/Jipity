@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { JipityMark } from "./components/jipity-mark";
 import {
   COST_GOVERNOR,
   MODEL_CONFIG,
@@ -130,6 +131,10 @@ export default function Home() {
     0,
     COST_GOVERNOR.dailyBudgetUsd - usage.spentUsd,
   );
+  const remainingBudgetPercent = Math.max(
+    0,
+    Math.min(100, (remainingBudget / COST_GOVERNOR.dailyBudgetUsd) * 100),
+  );
 
   async function send() {
     const text = input.trim();
@@ -242,113 +247,198 @@ export default function Home() {
 
   return (
     <main className="shell">
-      <div className="top">
-        <div>
-          <div className="brand">Jipity ✦</div>
-          <div className="sub">Private companion · evidence before certainty</div>
+      <header className="top">
+        <div className="brand-lockup">
+          <JipityMark className="header-mark" />
+          <div>
+            <div className="brand">Jipity</div>
+            <div className="sub">Truth · Wisdom · Freedom</div>
+          </div>
         </div>
         <div className="top-actions">
-          <span className="pill">{status}</span>
+          <span className="pill status-pill">
+            <span className="status-dot" aria-hidden="true" />
+            {status}
+          </span>
           <button className="smallbtn lockbtn" onClick={lockJipity}>
-            Lock Jipity
+            Lock
           </button>
         </div>
-      </div>
+      </header>
 
-      <div className="card">
-        <div className="chat">
-          {messages.length === 0 && (
-            <div className="assistant msg">
-              Hi. I’m Jipity. Ask me something enormous, strange, practical, or
-              completely ordinary.
+      <div className="workspace">
+        <section className="card conversation-card">
+          <div className="conversation-heading">
+            <div>
+              <div className="eyebrow">Your private companion</div>
+              <h1>Conversation</h1>
             </div>
-          )}
-          {messages.map((message, index) => (
-            <div key={index} className={`msg ${message.role}`}>
-              {message.content}
-            </div>
-          ))}
-        </div>
-
-        <div className="modebar">
-          <button
-            className={`modebtn spiritual${mode === "spiritual" ? " active" : ""}`}
-            onClick={() =>
-              setMode((selected) =>
-                selected === "spiritual" ? "standard" : "spiritual",
-              )
-            }
-            disabled={busy || remainingSpiritual === 0}
-            aria-pressed={mode === "spiritual"}
-            title="Use GPT-4o for a spiritual exercise on the next message only"
-          >
-            Spiritual
-          </button>
-          <button
-            className={`modebtn deep${mode === "deep" ? " active" : ""}`}
-            onClick={() =>
-              setMode((selected) =>
-                selected === "deep" ? "standard" : "deep",
-              )
-            }
-            disabled={busy || remainingDeep === 0}
-            aria-pressed={mode === "deep"}
-            title="Use GPT-5.6 Sol with high reasoning for the next message only"
-          >
-            Deep
-          </button>
-          <span className="modehint">{MODE_LABELS[mode]}</span>
-        </div>
-
-        <div className="composer">
-          <textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                send();
-              }
-            }}
-            maxLength={COST_GOVERNOR.maxMessageCharacters}
-            placeholder="Talk to Jipity…"
-          />
-          <button onClick={send} disabled={busy}>
-            Send
-          </button>
-        </div>
-
-        <div className="notice">
-          Daily safety budget: ${remainingBudget.toFixed(2)} remaining ·
-          Spiritual: {remainingSpiritual}/
-          {COST_GOVERNOR.maxSpiritualRequestsPerDay} left · Deep: {" "}
-          {remainingDeep}/{COST_GOVERNOR.maxDeepRequestsPerDay} left · Signed
-          server checks protect this session · Chat stays in this browser.
-        </div>
-
-        <details className="panel">
-          <summary>Safety & activity</summary>
-          <div className="row" style={{ margin: "10px 0" }}>
-            <span className="pill">No spending</span>
-            <span className="pill">No impersonation</span>
-            <span className="pill">No external data sharing</span>
-            <span className="pill">External actions disabled</span>
+            <span className="secure-label">
+              <span className="status-dot" aria-hidden="true" />
+              Secure
+            </span>
           </div>
-          <button className="smallbtn" onClick={clearLocal}>
-            Clear local memory & log
-          </button>
-          <div className="audit">
-            {audit
-              .slice()
-              .reverse()
-              .map((entry, index) => (
-                <div key={index}>
-                  {entry.at}: {entry.event}
+
+          <div className="chat">
+            {messages.length === 0 && (
+              <div className="welcome">
+                <JipityMark className="welcome-mark" />
+                <div className="eyebrow">Welcome back</div>
+                <h2>Hey, Christy.</h2>
+                <p>
+                  Ask me something enormous, strange, practical, or completely
+                  ordinary.
+                </p>
+                <div className="welcome-values">
+                  <span>Truth</span>
+                  <span>Wisdom</span>
+                  <span>Freedom</span>
                 </div>
-              ))}
+              </div>
+            )}
+            {messages.map((message, index) => (
+              <div key={index} className={`msg ${message.role}`}>
+                {message.content}
+              </div>
+            ))}
           </div>
-        </details>
+
+          <div className="modebar">
+            <button
+              className={`modebtn standard${mode === "standard" ? " active" : ""}`}
+              onClick={() => setMode("standard")}
+              disabled={busy}
+              aria-pressed={mode === "standard"}
+              title="Use GPT-5 nano for low-cost everyday conversation"
+            >
+              Everyday
+            </button>
+            <button
+              className={`modebtn spiritual${mode === "spiritual" ? " active" : ""}`}
+              onClick={() =>
+                setMode((selected) =>
+                  selected === "spiritual" ? "standard" : "spiritual",
+                )
+              }
+              disabled={busy || remainingSpiritual === 0}
+              aria-pressed={mode === "spiritual"}
+              title="Use GPT-4o for a spiritual exercise on the next message only"
+            >
+              Spiritual
+            </button>
+            <button
+              className={`modebtn deep${mode === "deep" ? " active" : ""}`}
+              onClick={() =>
+                setMode((selected) =>
+                  selected === "deep" ? "standard" : "deep",
+                )
+              }
+              disabled={busy || remainingDeep === 0}
+              aria-pressed={mode === "deep"}
+              title="Use GPT-5.6 Sol with high reasoning for the next message only"
+            >
+              Deep
+            </button>
+            <span className="modehint">{MODE_LABELS[mode]}</span>
+          </div>
+
+          <div className="composer">
+            <textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  send();
+                }
+              }}
+              maxLength={COST_GOVERNOR.maxMessageCharacters}
+              placeholder="Talk to Jipity…"
+            />
+            <button onClick={send} disabled={busy}>
+              {busy ? "Thinking…" : "Send"}
+            </button>
+          </div>
+
+          <div className="notice">
+            Signed server checks protect this session. Conversation stays in
+            this browser.
+          </div>
+        </section>
+
+        <aside className="insight-rail">
+          <section className="card status-card">
+            <div className="eyebrow">Jipity&apos;s status</div>
+            <div className="connection-label">
+              <span className="status-dot" aria-hidden="true" />
+              {busy ? "Thinking" : "Online and protected"}
+            </div>
+
+            <div className="stat-block">
+              <div className="stat-row">
+                <span>Daily session budget</span>
+                <strong>${remainingBudget.toFixed(2)} left</strong>
+              </div>
+              <div className="budget-meter" aria-hidden="true">
+                <span style={{ width: `${remainingBudgetPercent}%` }} />
+              </div>
+            </div>
+
+            <div className="stat-row">
+              <span>Spiritual</span>
+              <strong>
+                {remainingSpiritual}/
+                {COST_GOVERNOR.maxSpiritualRequestsPerDay}
+              </strong>
+            </div>
+            <div className="stat-row">
+              <span>Deep</span>
+              <strong>
+                {remainingDeep}/{COST_GOVERNOR.maxDeepRequestsPerDay}
+              </strong>
+            </div>
+            <div className="stat-row">
+              <span>Messages today</span>
+              <strong>
+                {usage.requests}/{COST_GOVERNOR.maxRequestsPerDay}
+              </strong>
+            </div>
+          </section>
+
+          <details className="card panel">
+            <summary>Safety &amp; activity</summary>
+            <div className="row">
+              <span className="pill">No spending</span>
+              <span className="pill">No impersonation</span>
+              <span className="pill">No external data sharing</span>
+              <span className="pill">External actions disabled</span>
+            </div>
+            <button className="smallbtn memorybtn" onClick={clearLocal}>
+              Clear local memory &amp; log
+            </button>
+            <div className="audit">
+              {audit
+                .slice()
+                .reverse()
+                .map((entry, index) => (
+                  <div key={index}>
+                    {entry.at}: {entry.event}
+                  </div>
+                ))}
+            </div>
+          </details>
+
+          <div className="mantra-card">
+            Evidence before certainty.
+            <br />
+            <span>Truth before fear.</span>
+          </div>
+        </aside>
       </div>
+
+      <footer className="site-footer">
+        Private <span>·</span> Secure <span>·</span> Sovereign
+      </footer>
     </main>
   );
 }

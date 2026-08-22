@@ -2,8 +2,8 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Jipity",
-  description: "Private AI companion",
+  title: "Jipity | Truth, Wisdom, Freedom",
+  description: "Your private AI companion for truth, wisdom, and freedom.",
   robots: {
     index: false,
     follow: false,

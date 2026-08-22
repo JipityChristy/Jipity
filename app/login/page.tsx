@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { JipityMark } from "../components/jipity-mark";
 
 export default function LoginPage() {
   const [accessCode, setAccessCode] = useState("");
@@ -38,11 +39,17 @@ export default function LoginPage() {
   return (
     <main className="auth-shell">
       <section className="card auth-card" aria-labelledby="jipity-login-title">
-        <div className="brand" id="jipity-login-title">
-          Jipity ✦
+        <div className="auth-emblem">
+          <JipityMark className="auth-mark" />
         </div>
+        <div className="eyebrow auth-eyebrow">Private and protected</div>
+        <h1 className="brand auth-brand" id="jipity-login-title">
+          Jipity
+        </h1>
+        <p className="auth-mantra">Truth · Wisdom · Freedom</p>
         <p className="auth-description">
-          This companion is private. Enter your access code to unlock it.
+          Your private companion is waiting. Enter your access code to unlock
+          the conversation.
         </p>
         <form onSubmit={unlock} className="auth-form">
           <label htmlFor="jipity-access-code">Private access code</label>
@@ -67,8 +74,8 @@ export default function LoginPage() {
           </p>
         )}
         <p className="auth-privacy">
-          Your access code is checked on the server and never saved in browser
-          storage.
+          <span className="status-dot" aria-hidden="true" />
+          Server-verified access. Your code is never saved in browser storage.
         </p>
       </section>
     </main>
